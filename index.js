@@ -3,7 +3,7 @@ const express = require("express");
 const app = express();
 app.use(express.json());
 
-// Use Node 24 native fetch
+// Node 24 built-in fetch
 const fetch = global.fetch;
 
 // =========================
@@ -32,7 +32,7 @@ async function searchDiscogsByBarcode(barcode, retries = 2) {
     const res = await fetch(url);
 
     if (res.status === 429 && retries > 0) {
-      console.log("⚠️ Rate limit hit, retrying...");
+      console.log("⚠️ Discogs rate limit, retrying...");
       await new Promise(r => setTimeout(r, 1500));
       return searchDiscogsByBarcode(barcode, retries - 1);
     }
@@ -62,6 +62,25 @@ async function createShopifyProduct(item) {
 
   const url = `https://${store}/admin/api/2024-01/products.json`;
 
+  // SAFE VENDOR NORMALIZATION
+  let vendor = item.label;
+
+  if (Array.isArray(vendor)) {
+    vendor = vendor[0];
+  }
+
+  if (!vendor || typeof vendor !== "string") {
+    vendor = "Discogs Import";
+  }
+
+  const payload = {
+    product: {
+      title: item.title || "Unknown Record",
+      vendor: vendor,
+      variants: [{ price: "20.00" }]
+    }
+  };
+
   try {
     const res = await fetch(url, {
       method: "POST",
@@ -69,13 +88,7 @@ async function createShopifyProduct(item) {
         "Content-Type": "application/json",
         "X-Shopify-Access-Token": token
       },
-      body: JSON.stringify({
-        product: {
-          title: item.title || "Unknown Record",
-          vendor: item.label || "Discogs Import",
-          variants: [{ price: "20.00" }]
-        }
-      })
+      body: JSON.stringify(payload)
     });
 
     const data = await res.json();
@@ -109,7 +122,10 @@ app.post("/bulk-import", async (req, res) => {
     const discogs = await searchDiscogsByBarcode(barcode);
 
     if (!discogs) {
-      results.push({ barcode, status: "NOT_FOUND" });
+      results.push({
+        barcode,
+        status: "NOT_FOUND"
+      });
       continue;
     }
 
