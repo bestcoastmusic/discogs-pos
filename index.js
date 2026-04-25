@@ -1,284 +1,171 @@
-const express = require("express");
-require("dotenv").config();
-
-const {
-  searchDiscogs,
-  pickBestRelease,
-} = require("./core/discogs");
-
-const { getPriceByReleaseId } = require("./core/pricing");
-const { createShopifyProduct } = require("./core/shopify");
+import express from "express";
+import fetch from "node-fetch";
 
 const app = express();
-
-app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-const PORT = process.env.PORT || 3000;
+// =========================
+// ENV DEBUG (CONFIRM LOADING)
+// =========================
+console.log("🔥 ENV CHECK START");
+console.log("SHOPIFY_STORE =", process.env.SHOPIFY_STORE);
+console.log("SHOPIFY_TOKEN EXISTS =", !!process.env.SHOPIFY_TOKEN);
+console.log("DISCOGS_TOKEN EXISTS =", !!process.env.DISCOGS_TOKEN);
 
-console.log("🔥 POS SYSTEM RUNNING");
-
-// ================= STATE =================
-let queue = [];
-let history = [];
-let processing = false;
-
-// ================= UI =================
+// =========================
+// HEALTH CHECK
+// =========================
 app.get("/", (req, res) => {
-  res.send(`
-<!DOCTYPE html>
-<html>
-<head>
-  <title>POS Scanner</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
+  res.send("Best Coast Music POS Running");
+});
 
-  <style>
-    body { margin:0; font-family:Arial; background:#111; color:#fff; }
-    .wrap { display:flex; height:100vh; }
+// =========================
+// DISCOGS SEARCH (SAFE)
+// =========================
+async function searchDiscogsByBarcode(barcode, retries = 3) {
+  if (!barcode) return null;
 
-    .left {
-      width:40%;
-      padding:20px;
-      border-right:1px solid #333;
+  const url = `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`;
+
+  try {
+    const res = await fetch(url);
+
+    if (res.status === 429) {
+      console.log("⚠️ Discogs 429 rate limit");
+      if (retries > 0) {
+        await new Promise(r => setTimeout(r, 2000));
+        return searchDiscogsByBarcode(barcode, retries - 1);
+      }
+      return null;
     }
 
-    .right {
-      width:60%;
-      padding:20px;
-      overflow:auto;
-    }
+    const data = await res.json();
+    if (!data.results || data.results.length === 0) return null;
 
-    input, textarea {
-      width:100%;
-      padding:12px;
-      margin-bottom:10px;
-      font-size:16px;
-    }
+    return data.results[0];
 
-    button {
-      width:100%;
-      padding:12px;
-      margin-top:5px;
-      background:#00c853;
-      border:none;
-      color:white;
-      cursor:pointer;
-    }
-
-    .card {
-      background:#222;
-      padding:10px;
-      margin-bottom:10px;
-      border-radius:6px;
-    }
-
-    #camera {
-      margin-top:10px;
-      border:2px solid #333;
-      min-height:200px;
-    }
-  </style>
-</head>
-
-<body>
-<div class="wrap">
-
-<!-- LEFT -->
-<div class="left">
-  <h2>📦 POS Scanner</h2>
-
-  <input id="barcode" placeholder="scan or type barcode"/>
-
-  <button onclick="scanManual()">Scan</button>
-  <button onclick="startCamera()">📷 Camera Scan</button>
-
-  <div id="camera"></div>
-
-  <hr/>
-
-  <h3>Bulk Import</h3>
-  <textarea id="bulkList" placeholder="one barcode per line"></textarea>
-  <button onclick="runBulk()">Run Bulk Import</button>
-
-  <h3>Queue: <span id="queueCount">0</span></h3>
-</div>
-
-<!-- RIGHT -->
-<div class="right">
-  <h2>🔥 Live Feed</h2>
-  <div id="feed"></div>
-</div>
-
-</div>
-
-<script>
-
-// ================= MANUAL SCAN =================
-async function scanManual() {
-  const barcode = document.getElementById("barcode").value;
-
-  const res = await fetch("/api/scan", {
-    method:"POST",
-    headers: {"Content-Type":"application/x-www-form-urlencoded"},
-    body:"barcode=" + encodeURIComponent(barcode)
-  });
-
-  const data = await res.json();
-  addFeed(data);
+  } catch (err) {
+    console.log("Discogs error:", err.message);
+    return null;
+  }
 }
 
-// ================= FEED =================
-function addFeed(item){
-  const div = document.createElement("div");
-  div.className = "card";
-  div.innerHTML = "<b>" + item.title + "</b><br><small>" + item.status + "</small>";
-  document.getElementById("feed").prepend(div);
-}
+// =========================
+// SHOPIFY CREATE PRODUCT (FULL DEBUG VERSION)
+// =========================
+async function createShopifyProduct(product) {
+  console.log("👉 SHOPIFY FUNCTION CALLED");
+  console.log("Product:", product?.title);
 
-// ================= CAMERA =================
-function startCamera(){
-  if(!window.Quagga){
-    alert("Camera not loaded");
+  const store = process.env.SHOPIFY_STORE;
+  const token = process.env.SHOPIFY_TOKEN;
+
+  console.log("STORE:", store);
+  console.log("TOKEN EXISTS:", !!token);
+
+  if (!store || !token) {
+    console.log("❌ MISSING SHOPIFY CREDENTIALS");
     return;
   }
 
-  Quagga.init({
-    inputStream: {
-      name: "Live",
-      type: "LiveStream",
-      target: document.querySelector("#camera"),
-      constraints: {
-        facingMode: "environment"
+  try {
+    const url = `https://${store}/admin/api/2024-01/products.json`;
+
+    console.log("👉 SHOPIFY URL:", url);
+
+    const body = {
+      product: {
+        title: product.title || "Unknown Record",
+        body_html: product.title || "",
+        vendor: product.label || "Discogs Import",
+        variants: [
+          { price: "20.00" }
+        ]
       }
-    },
-    decoder: {
-      readers: ["ean_reader", "upc_reader"]
-    }
-  }, function(err){
-    if(err){
-      console.log(err);
-      return;
-    }
-    Quagga.start();
-  });
+    };
 
-  Quagga.onDetected(async function(data){
-    const code = data.codeResult.code;
-
-    Quagga.stop();
-
-    const res = await fetch("/api/scan", {
-      method:"POST",
-      headers: {"Content-Type":"application/x-www-form-urlencoded"},
-      body:"barcode=" + encodeURIComponent(code)
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": token
+      },
+      body: JSON.stringify(body)
     });
 
-    const item = await res.json();
-    addFeed(item);
-  });
+    const data = await res.json();
+
+    if (!res.ok) {
+      console.log("❌ SHOPIFY ERROR RESPONSE:", data);
+      return;
+    }
+
+    console.log("✅ SHOPIFY SUCCESS:", data.product?.id);
+
+  } catch (err) {
+    console.log("❌ SHOPIFY EXCEPTION:", err.message);
+  }
 }
 
-// ================= BULK =================
-async function runBulk(){
-  const list = document.getElementById("bulkList").value;
+// =========================
+// BULK IMPORT
+// =========================
+app.post("/bulk-import", async (req, res) => {
+  const items = req.body.items;
 
-  const res = await fetch("/api/bulk", {
-    method:"POST",
-    headers: {"Content-Type":"application/x-www-form-urlencoded"},
-    body:"list=" + encodeURIComponent(list)
-  });
-
-  const data = await res.json();
-
-  alert("Queued: " + data.queued);
-}
-
-</script>
-
-</body>
-</html>
-  `);
-});
-
-// ================= SCAN =================
-app.post("/api/scan", async (req, res) => {
-  const barcode = req.body.barcode;
-
-  console.log("SCAN:", barcode);
-
-  const results = await searchDiscogs(barcode);
-
-  if (!results.length) {
-    return res.json({ title: barcode, status: "not found" });
+  if (!items || !Array.isArray(items)) {
+    return res.status(400).json({ error: "No items provided" });
   }
 
-  const best = pickBestRelease(results, barcode);
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const results = [];
 
-  let price = null;
-  if (best?.id) {
-    price = await getPriceByReleaseId(best.id);
-  }
+  for (const item of items) {
+    try {
+      await sleep(900);
 
-  const item = {
-    title: best.title,
-    price,
-    status: "success"
-  };
+      const barcode = item.barcode || item.upc || item.ean;
 
-  history.unshift(item);
+      console.log("📦 BULK:", barcode);
 
-  processQueue();
+      const discogs = await searchDiscogsByBarcode(barcode);
 
-  res.json(item);
-});
+      if (!discogs) {
+        results.push({ barcode, status: "NOT_FOUND" });
+        continue;
+      }
 
-// ================= BULK =================
-app.post("/api/bulk", async (req, res) => {
-  const list = req.body.list?.split("\n") || [];
+      await createShopifyProduct(discogs);
 
-  queue.push(...list);
-
-  processQueue();
-
-  res.json({ queued: list.length });
-});
-
-// ================= QUEUE =================
-async function processQueue(){
-  if(processing) return;
-  processing = true;
-
-  while(queue.length){
-    const barcode = queue.shift();
-
-    console.log("BULK:", barcode);
-
-    const results = await searchDiscogs(barcode);
-
-    if(results.length){
-      const best = pickBestRelease(results, barcode);
-
-      let price = await getPriceByReleaseId(best.id);
-
-      await createShopifyProduct({
-        title: best.title,
-        price,
+      results.push({
         barcode,
-        image: best.cover_image
+        status: "IMPORTED",
+        title: discogs.title
       });
 
-      history.unshift({
-        title: best.title,
-        status: "bulk added"
+    } catch (err) {
+      console.log("❌ IMPORT ERROR:", err.message);
+
+      results.push({
+        barcode: item.barcode,
+        status: "ERROR",
+        error: err.message
       });
     }
   }
 
-  processing = false;
-}
+  res.json({
+    success: true,
+    results
+  });
+});
 
-// ================= START =================
+// =========================
+// START SERVER
+// =========================
+const PORT = process.env.PORT || 10000;
+
 app.listen(PORT, () => {
+  console.log("🔥 POS SYSTEM RUNNING");
   console.log("🚀 Running on port", PORT);
 });
