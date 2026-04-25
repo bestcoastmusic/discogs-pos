@@ -16,25 +16,25 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-console.log("🔥 HANDHELD POS RUNNING");
+console.log("🔥 POS SYSTEM RUNNING");
 
 // ================= STATE =================
 let queue = [];
 let history = [];
 let processing = false;
 
-// ================= HOME UI =================
+// ================= UI =================
 app.get("/", (req, res) => {
   res.send(`
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Best Coast POS</title>
+  <title>POS Scanner</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
 
   <style>
-    body { font-family: Arial; background:#111; color:#fff; margin:0; }
+    body { margin:0; font-family:Arial; background:#111; color:#fff; }
     .wrap { display:flex; height:100vh; }
 
     .left {
@@ -49,21 +49,20 @@ app.get("/", (req, res) => {
       overflow:auto;
     }
 
-    input {
+    input, textarea {
       width:100%;
-      padding:15px;
-      font-size:18px;
+      padding:12px;
       margin-bottom:10px;
+      font-size:16px;
     }
 
     button {
       width:100%;
-      padding:15px;
-      font-size:16px;
+      padding:12px;
       margin-top:5px;
       background:#00c853;
       border:none;
-      color:#fff;
+      color:white;
       cursor:pointer;
     }
 
@@ -71,19 +70,21 @@ app.get("/", (req, res) => {
       background:#222;
       padding:10px;
       margin-bottom:10px;
-      border-radius:8px;
+      border-radius:6px;
     }
 
-    .status { color:#00e676; font-weight:bold; }
-
-    #camera { margin-top:10px; border:2px solid #333; }
+    #camera {
+      margin-top:10px;
+      border:2px solid #333;
+      min-height:200px;
+    }
   </style>
 </head>
 
 <body>
 <div class="wrap">
 
-<!-- LEFT PANEL -->
+<!-- LEFT -->
 <div class="left">
   <h2>📦 POS Scanner</h2>
 
@@ -94,11 +95,16 @@ app.get("/", (req, res) => {
 
   <div id="camera"></div>
 
-  <h3>Queue</h3>
-  <div id="queue"></div>
+  <hr/>
+
+  <h3>Bulk Import</h3>
+  <textarea id="bulkList" placeholder="one barcode per line"></textarea>
+  <button onclick="runBulk()">Run Bulk Import</button>
+
+  <h3>Queue: <span id="queueCount">0</span></h3>
 </div>
 
-<!-- RIGHT PANEL -->
+<!-- RIGHT -->
 <div class="right">
   <h2>🔥 Live Feed</h2>
   <div id="feed"></div>
@@ -107,6 +113,8 @@ app.get("/", (req, res) => {
 </div>
 
 <script>
+
+// ================= MANUAL SCAN =================
 async function scanManual() {
   const barcode = document.getElementById("barcode").value;
 
@@ -120,16 +128,21 @@ async function scanManual() {
   addFeed(data);
 }
 
+// ================= FEED =================
 function addFeed(item){
   const div = document.createElement("div");
   div.className = "card";
-  div.innerHTML = "<b>" + item.title + "</b><br>" +
-                  "<span class='status'>" + item.status + "</span>";
+  div.innerHTML = "<b>" + item.title + "</b><br><small>" + item.status + "</small>";
   document.getElementById("feed").prepend(div);
 }
 
-// ================= CAMERA SCAN =================
+// ================= CAMERA =================
 function startCamera(){
+  if(!window.Quagga){
+    alert("Camera not loaded");
+    return;
+  }
+
   Quagga.init({
     inputStream: {
       name: "Live",
@@ -143,12 +156,16 @@ function startCamera(){
       readers: ["ean_reader", "upc_reader"]
     }
   }, function(err){
-    if(err){ console.log(err); return; }
+    if(err){
+      console.log(err);
+      return;
+    }
     Quagga.start();
   });
 
   Quagga.onDetected(async function(data){
     const code = data.codeResult.code;
+
     Quagga.stop();
 
     const res = await fetch("/api/scan", {
@@ -161,6 +178,22 @@ function startCamera(){
     addFeed(item);
   });
 }
+
+// ================= BULK =================
+async function runBulk(){
+  const list = document.getElementById("bulkList").value;
+
+  const res = await fetch("/api/bulk", {
+    method:"POST",
+    headers: {"Content-Type":"application/x-www-form-urlencoded"},
+    body:"list=" + encodeURIComponent(list)
+  });
+
+  const data = await res.json();
+
+  alert("Queued: " + data.queued);
+}
+
 </script>
 
 </body>
@@ -200,7 +233,7 @@ app.post("/api/scan", async (req, res) => {
   res.json(item);
 });
 
-// ================= BULK QUEUE =================
+// ================= BULK =================
 app.post("/api/bulk", async (req, res) => {
   const list = req.body.list?.split("\n") || [];
 
@@ -211,6 +244,7 @@ app.post("/api/bulk", async (req, res) => {
   res.json({ queued: list.length });
 });
 
+// ================= QUEUE =================
 async function processQueue(){
   if(processing) return;
   processing = true;
@@ -246,5 +280,5 @@ async function processQueue(){
 
 // ================= START =================
 app.listen(PORT, () => {
-  console.log("🚀 POS running on port", PORT);
+  console.log("🚀 Running on port", PORT);
 });
