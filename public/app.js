@@ -1,17 +1,20 @@
-console.log("APP JS LOADED");
+console.log("PRO POS LOADED");
 
 window.onload = function(){
-
-  console.log("WINDOW LOADED");
-
   document.getElementById("scanBtn").onclick = scan;
   document.getElementById("bulkBtn").onclick = bulk;
   document.getElementById("cameraBtn").onclick = startCamera;
-
 };
 
 // ----------------------------
-// SCAN
+// HELPERS
+// ----------------------------
+function estimatePrice(){
+  return "$20+"; // placeholder until backend pricing preview
+}
+
+// ----------------------------
+// SCAN (AUTO BEST MATCH)
 // ----------------------------
 async function scan(){
   const barcode = document.getElementById("barcode").value;
@@ -25,19 +28,25 @@ async function scan(){
   const data = await res.json();
 
   const box = document.getElementById("results");
-  box.innerHTML = "";
+  box.innerHTML = "<h4>Select or Tap to Quick Add</h4>";
 
-  data.results.forEach(r => {
+  data.results.forEach((r, i) => {
+
     const div = document.createElement("div");
     div.className = "card";
+
+    // highlight first (best match)
+    if (i === 0) div.style.border = "2px solid #00e676";
 
     div.innerHTML =
       "<img src='" + (r.thumb || "") + "' width='60'/>" +
       "<b>" + r.title + "</b><br/>" +
       (r.year || "") + " • " + (r.country || "") + "<br/>" +
       "<small>" + (r.label || "") + "</small><br/>" +
-      "<small>" + (r.format || "") + "</small>";
+      "<small>" + (r.format || "") + "</small><br/>" +
+      "<b>" + estimatePrice() + "</b>";
 
+    // click = instant add
     div.onclick = () => importItem(r.id);
 
     box.appendChild(div);
@@ -45,7 +54,7 @@ async function scan(){
 }
 
 // ----------------------------
-// IMPORT (WITH DUPLICATE ALERT)
+// IMPORT
 // ----------------------------
 async function importItem(id){
   const condition = document.getElementById("condition").value;
@@ -60,14 +69,16 @@ async function importItem(id){
 
   const data = await res.json();
 
-  if (data.duplicates && data.duplicates.length > 0) {
-    alert("⚠️ Duplicate already added!");
+  if (data.duplicates?.length > 0) {
+    alert("⚠️ Duplicate already in inventory");
   }
 }
 
 // ----------------------------
-// BULK PREVIEW (MULTI OPTION)
+// BULK (TABLE MODE + ADD ALL)
 // ----------------------------
+let bulkCache = [];
+
 async function bulk(){
 
   const lines = document.getElementById("bulk").value
@@ -81,9 +92,10 @@ async function bulk(){
   });
 
   const data = await res.json();
+  bulkCache = data.results;
 
   const box = document.getElementById("results");
-  box.innerHTML = "<h4>Bulk Preview (Choose Pressing)</h4>";
+  box.innerHTML = "<h4>Bulk Review</h4>";
 
   data.results.forEach((item,i) => {
 
@@ -123,27 +135,9 @@ async function bulk(){
     });
 
     const btn = document.createElement("button");
-    btn.textContent = "Add to Queue";
+    btn.textContent = "Add";
 
-    btn.onclick = async () => {
-
-      const id = selectRelease.value;
-      const condition = selectCondition.value;
-
-      const res = await fetch("/import", {
-        method:"POST",
-        headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify({
-          items:[{ id, condition }]
-        })
-      });
-
-      const data = await res.json();
-
-      if (data.duplicates && data.duplicates.length > 0) {
-        alert("⚠️ Duplicate skipped!");
-      }
-    };
+    btn.onclick = () => addSingle(i);
 
     div.appendChild(img);
     div.appendChild(selectRelease);
@@ -152,6 +146,60 @@ async function bulk(){
 
     box.appendChild(div);
   });
+
+  // ADD ALL BUTTON
+  const addAll = document.createElement("button");
+  addAll.textContent = "🚀 Add ALL";
+  addAll.style.marginTop = "20px";
+
+  addAll.onclick = addAllBulk;
+
+  box.appendChild(addAll);
+}
+
+// ----------------------------
+// ADD SINGLE BULK
+// ----------------------------
+async function addSingle(i){
+  const id = document.getElementById("release-"+i).value;
+  const condition = document.getElementById("cond-"+i).value;
+
+  await sendImport([{ id, condition }]);
+}
+
+// ----------------------------
+// ADD ALL BULK
+// ----------------------------
+async function addAllBulk(){
+
+  let items = [];
+
+  bulkCache.forEach((item,i) => {
+    const id = document.getElementById("release-"+i).value;
+    const condition = document.getElementById("cond-"+i).value;
+
+    items.push({ id, condition });
+  });
+
+  await sendImport(items);
+}
+
+// ----------------------------
+// IMPORT WRAPPER
+// ----------------------------
+async function sendImport(items){
+
+  const res = await fetch("/import", {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ items })
+  });
+
+  const data = await res.json();
+
+  if (data.duplicates?.length > 0) {
+    alert("⚠️ Some duplicates skipped");
+  }
 }
 
 // ----------------------------
