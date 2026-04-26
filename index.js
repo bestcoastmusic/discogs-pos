@@ -12,7 +12,12 @@ let inventory = new Map();
 // ----------------------------
 // PRICING
 // ----------------------------
-const conditionMultiplier = {
+  "NM": 1.25,
+  "VG+": 1.0,
+  "VG": 0.8,
+  "G": 0.5
+};const conditionMultiplier = {
+  "M": 1.5,
   "NM": 1.25,
   "VG+": 1.0,
   "VG": 0.8,
@@ -95,13 +100,18 @@ button{width:100%;padding:10px;margin-top:8px;background:#00e676;border:none;bor
 <div class="panel">
 <h3>Scan</h3>
 <input id="barcode"/>
-<select id="condition">
   <option>VG+</option>
   <option>NM</option>
   <option>VG</option>
   <option>G</option>
 </select>
-
+<select id="condition">
+  <option>M</option>
+  <option>NM</option>
+  <option>VG+</option>
+  <option>VG</option>
+  <option>G</option>
+</select>
 <button onclick="scan()">SCAN</button>
 
 <h3>Bulk Import</h3>
