@@ -1,4 +1,4 @@
-console.log("POS READY");
+console.log("PRO POS READY");
 
 window.onload = function(){
   document.getElementById("scanBtn").onclick = scan;
@@ -7,7 +7,7 @@ window.onload = function(){
 };
 
 // ----------------------------
-// SCAN
+// SCAN (ACCURATE)
 // ----------------------------
 async function scan(){
   const barcode = document.getElementById("barcode").value;
@@ -41,7 +41,7 @@ async function scan(){
 }
 
 // ----------------------------
-// IMPORT
+// IMPORT (WITH DUPLICATE ALERT)
 // ----------------------------
 async function importItem(id){
   const condition = document.getElementById("condition").value;
@@ -56,15 +56,16 @@ async function importItem(id){
 
   const data = await res.json();
 
-  if (data.duplicates.length) {
-    alert("Duplicate skipped");
+  if (data.duplicates?.length > 0) {
+    alert("⚠️ Duplicate already in inventory");
   }
 }
 
 // ----------------------------
-// BULK
+// BULK (FULL PRO VERSION)
 // ----------------------------
 async function bulk(){
+
   const lines = document.getElementById("bulk").value
     .split("\n")
     .filter(Boolean);
@@ -76,41 +77,132 @@ async function bulk(){
   });
 
   const data = await res.json();
+
   const box = document.getElementById("results");
+  box.innerHTML = "<h4>Bulk Review</h4>";
 
-  box.innerHTML = "<h4>Bulk</h4>";
+  // GLOBAL CONDITION SELECT
+  const globalCondition = document.createElement("select");
 
-  data.results.forEach((item,i)=>{
+  ["M","NM","VG+","VG","G"].forEach(c => {
+    const o = document.createElement("option");
+    o.value = c;
+    o.textContent = "All: " + c;
+    globalCondition.appendChild(o);
+  });
+
+  box.appendChild(globalCondition);
+
+  // APPLY TO ALL BUTTON
+  const applyAllBtn = document.createElement("button");
+  applyAllBtn.textContent = "Apply Condition to All";
+
+  applyAllBtn.onclick = () => {
+    const val = globalCondition.value;
+    document.querySelectorAll("[id^='cond-']").forEach(el => {
+      el.value = val;
+    });
+  };
+
+  box.appendChild(applyAllBtn);
+
+  data.results.forEach((item,i) => {
+
     const div = document.createElement("div");
     div.className = "card";
 
-    const select = document.createElement("select");
-    select.id = "r-"+i;
+    // IMAGE
+    const img = document.createElement("img");
+    img.src = item.options[0]?.thumb || "";
+    img.width = 60;
 
-    item.options.forEach(opt=>{
+    // RELEASE SELECT
+    const selectRelease = document.createElement("select");
+    selectRelease.id = "release-" + i;
+
+    item.options.forEach(opt => {
       const o = document.createElement("option");
       o.value = opt.id;
       o.textContent =
-        opt.title+" ("+
-        opt.year+" • "+
-        opt.country+" • "+
-        opt.color+")";
-      select.appendChild(o);
+        opt.title + " (" +
+        (opt.year || "") + " • " +
+        (opt.country || "") + " • " +
+        (opt.color || "Unknown") + ")";
+      selectRelease.appendChild(o);
     });
 
+    selectRelease.onchange = function(){
+      const selected = item.options.find(o => o.id == selectRelease.value);
+      img.src = selected?.thumb || "";
+    };
+
+    // CONDITION SELECT
+    const selectCondition = document.createElement("select");
+    selectCondition.id = "cond-" + i;
+
+    ["M","NM","VG+","VG","G"].forEach(c => {
+      const o = document.createElement("option");
+      o.value = c;
+      o.textContent = c;
+      selectCondition.appendChild(o);
+    });
+
+    // ADD BUTTON
     const btn = document.createElement("button");
     btn.textContent = "Add";
 
-    btn.onclick = async ()=>{
-      const id = select.value;
-      await importItem(id);
+    btn.onclick = async () => {
+      const id = selectRelease.value;
+      const condition = selectCondition.value;
+
+      await sendImport([{ id, condition }]);
     };
 
-    div.appendChild(select);
+    div.appendChild(img);
+    div.appendChild(selectRelease);
+    div.appendChild(selectCondition);
     div.appendChild(btn);
 
     box.appendChild(div);
   });
+
+  // ADD ALL BUTTON
+  const addAll = document.createElement("button");
+  addAll.textContent = "🚀 Add ALL";
+
+  addAll.onclick = async () => {
+
+    let items = [];
+
+    data.results.forEach((item,i) => {
+      const id = document.getElementById("release-"+i).value;
+      const condition = document.getElementById("cond-"+i).value;
+
+      items.push({ id, condition });
+    });
+
+    await sendImport(items);
+  };
+
+  box.appendChild(addAll);
+}
+
+// ----------------------------
+// IMPORT WRAPPER
+// ----------------------------
+async function sendImport(items){
+
+  const res = await fetch("/import", {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ items })
+  });
+
+  const data = await res.json();
+
+  if (data.duplicates?.length > 0) {
+    alert("⚠️ Some duplicates skipped");
+  }
 }
 
 // ----------------------------
@@ -148,14 +240,16 @@ async function scanFrame(){
     if ('BarcodeDetector' in window) {
       const detector = new BarcodeDetector({ formats:['ean_13','upc_a'] });
 
-      const codes = await detector.detect(canvas);
+      try {
+        const codes = await detector.detect(canvas);
 
-      if (codes.length){
-        document.getElementById("barcode").value = codes[0].rawValue;
-        stopCamera();
-        scan();
-        return;
-      }
+        if (codes.length){
+          document.getElementById("barcode").value = codes[0].rawValue;
+          stopCamera();
+          scan();
+          return;
+        }
+      } catch {}
     }
   }
 
@@ -181,11 +275,11 @@ async function load(){
   const log = document.getElementById("log");
   log.innerHTML = "";
 
-  data.history.slice().reverse().forEach(i=>{
+  (data.history || []).slice().reverse().forEach(i=>{
     const div = document.createElement("div");
     div.className = "card";
     div.textContent =
-      i.artist+" - "+i.title+" $"+i.price;
+      i.artist+" - "+i.title+" $"+i.price+" ("+i.condition+")";
     log.appendChild(div);
   });
 }
