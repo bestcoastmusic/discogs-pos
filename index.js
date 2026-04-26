@@ -5,17 +5,21 @@ app.use(express.json());
 const fetch = global.fetch;
 
 // =========================
-// QUEUE + HISTORY (WORKING STATE)
+// QUEUE + HISTORY
 // =========================
 let queue = [];
 let processing = false;
 let history = [];
 
-// helper (DO NOT EDIT)
-function addHistory(barcode, status) {
+// =========================
+// HISTORY HELPER
+// =========================
+function addHistory(barcode, item) {
   history.push({
     barcode,
-    status,
+    title: item?.title || "Unknown Title",
+    artist: item?.artist || "Unknown Artist",
+    status: "IMPORTED",
     time: new Date().toISOString()
   });
 
@@ -36,7 +40,7 @@ app.get("/", (req, res) => {
 <style>
 body { font-family: Arial; background:#111; color:#fff; text-align:center; padding:20px; }
 input, textarea { padding:10px; width:260px; margin:5px; }
-button { padding:10px 14px; margin:5px; cursor:pointer; }
+button { padding:10px 14px; margin:5px; cursor:pointer; background:#00c853; color:#fff; border:none; border-radius:6px; }
 #log { margin-top:20px; text-align:left; max-width:600px; margin:auto; }
 .item { background:#222; padding:8px; margin:5px; border-radius:6px; }
 video { width:300px; display:none; margin-top:10px; }
@@ -44,7 +48,7 @@ video { width:300px; display:none; margin-top:10px; }
 </head>
 <body>
 
-<h1>🎧 POS SYSTEM</h1>
+<h1>🎧 Best Coast POS</h1>
 
 <h3>Single Scan</h3>
 <input id="barcode" placeholder="barcode"/>
@@ -70,7 +74,9 @@ function log(msg){
   document.getElementById("log").prepend(div);
 }
 
+// =========================
 // SINGLE SCAN
+// =========================
 async function scan(){
   const barcode = document.getElementById("barcode").value;
 
@@ -84,7 +90,9 @@ async function scan(){
   log("📦 " + barcode + " → QUEUED");
 }
 
-// BULK SCAN
+// =========================
+// BULK
+// =========================
 async function bulk(){
   const lines = document.getElementById("bulk").value.split("\\n").filter(Boolean);
 
@@ -100,7 +108,9 @@ async function bulk(){
   log("📦 BULK QUEUED: " + data.queued);
 }
 
-// CAMERA (basic)
+// =========================
+// CAMERA
+// =========================
 async function camera(){
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video:true });
@@ -113,7 +123,9 @@ async function camera(){
   }
 }
 
-// LIVE HISTORY (FIXED)
+// =========================
+// LIVE HISTORY
+// =========================
 async function loadHistory(){
   const res = await fetch("/history");
   const data = await res.json();
@@ -126,7 +138,14 @@ async function loadHistory(){
   items.slice().reverse().forEach(item => {
     const div = document.createElement("div");
     div.className = "item";
-    div.innerText = "📦 " + item.barcode + " → " + item.status;
+
+    div.innerText =
+      "📦 " +
+      (item.artist || "Unknown Artist") +
+      " - " +
+      (item.title || "Unknown Title") +
+      " (" + item.barcode + ")";
+
     logDiv.appendChild(div);
   });
 }
@@ -149,14 +168,23 @@ async function fetchDiscogs(barcode){
     const url = `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`;
     const res = await fetch(url);
     const data = await res.json();
-    return data.results?.[0] || null;
+
+    const result = data.results?.[0];
+
+    if (!result) return null;
+
+    return {
+      title: result.title,
+      artist: result.artist || "Unknown Artist"
+    };
+
   } catch (e) {
     return null;
   }
 }
 
 // =========================
-// SHOPIFY
+// SHOPIFY (FIXED PRICE = $20)
 // =========================
 async function createShopifyProduct(item){
   const store = process.env.SHOPIFY_STORE;
@@ -168,19 +196,24 @@ async function createShopifyProduct(item){
     method:"POST",
     headers:{
       "Content-Type":"application/json",
-      "X-Shopify-Access-Token": token
+      "X-Shopify-Access-Token":token
     },
     body: JSON.stringify({
       product:{
         title: item.title || "Unknown Record",
-        variants:[{ price:"20.00" }]
+        variants:[
+          {
+            price: "20.00",
+            inventory_quantity: 1
+          }
+        ]
       }
     })
   });
 }
 
 // =========================
-// QUEUE PROCESSOR (WORKING)
+// QUEUE PROCESSOR
 // =========================
 async function processQueue(){
   if (processing) return;
@@ -192,11 +225,15 @@ async function processQueue(){
     console.log("PROCESS:", job.barcode);
 
     const discogs = await fetchDiscogs(job.barcode);
-    if (!discogs) continue;
+
+    if (!discogs) {
+      addHistory(job.barcode, null);
+      continue;
+    }
 
     await createShopifyProduct(discogs);
 
-    addHistory(job.barcode, "IMPORTED");
+    addHistory(job.barcode, discogs);
   }
 
   processing = false;
@@ -213,7 +250,7 @@ app.post("/bulk-import", (req, res) => {
   items.forEach(i => queue.push(i));
 
   res.json({
-    success: true,
+    success:true,
     queued: items.length
   });
 });
@@ -223,7 +260,7 @@ app.post("/bulk-import", (req, res) => {
 // =========================
 app.get("/history", (req, res) => {
   res.json({
-    success: true,
+    success:true,
     history
   });
 });
