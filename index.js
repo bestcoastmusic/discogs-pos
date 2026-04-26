@@ -13,7 +13,7 @@ let history = [];
 let inventory = new Map();
 
 // ----------------------------
-// CONDITION PRICING
+// PRICING
 // ----------------------------
 const conditionMultiplier = {
   "M": 1.5,
@@ -22,40 +22,6 @@ const conditionMultiplier = {
   "VG": 0.8,
   "G": 0.5
 };
-
-// ----------------------------
-// HISTORY
-// ----------------------------
-function addHistory(barcode, item, note = "") {
-  history.push({
-    barcode,
-    artist: item.artist,
-    title: item.title,
-    price: item.price,
-    condition: item.condition,
-    image: item.image,
-    note
-  });
-
-  if (history.length > 200) {
-    history = history.slice(-200);
-  }
-}
-
-// ----------------------------
-// INVENTORY (STRICT DUPLICATE PROTECTION)
-// ----------------------------
-function checkDuplicate(barcode) {
-  return inventory.has(barcode);
-}
-
-function saveInventory(barcode, item, condition) {
-  inventory.set(barcode, {
-    ...item,
-    condition,
-    status: "ACTIVE"
-  });
-}
 
 // ----------------------------
 // UI
@@ -102,13 +68,19 @@ button{
 }
 
 .item img{width:60px;border-radius:4px}
-.small{font-size:12px;color:#aaa}
+.release{
+  background:#222;
+  padding:10px;
+  margin:6px 0;
+  cursor:pointer;
+  border-radius:6px;
+}
 </style>
 </head>
 <body>
 
 <div class="top">
-  <div>🎧 RETAIL POS</div>
+  <div>🎧 MULTI-RELEASE POS</div>
   <div>LIVE</div>
 </div>
 
@@ -116,7 +88,7 @@ button{
 
 <div class="panel">
 
-<h3>Scan</h3>
+<h3>Scan Barcode</h3>
 <input id="barcode"/>
 
 <select id="condition">
@@ -127,15 +99,13 @@ button{
   <option>G</option>
 </select>
 
-<button onclick="scan()">SCAN</button>
+<button onclick="scan()">SEARCH RELEASES</button>
 
-<h3>Bulk</h3>
-<textarea id="bulk" rows="6"></textarea>
+<div id="results"></div>
 
-<button onclick="preview()">PREVIEW</button>
-<button onclick="bulk()">IMPORT</button>
-
-<div id="previewBox"></div>
+<h3>Bulk Import</h3>
+<textarea id="bulk"></textarea>
+<button onclick="bulk()">IMPORT BULK</button>
 
 </div>
 
@@ -148,55 +118,73 @@ button{
 
 <script>
 
-let previewData = [];
+let selectedBarcode = null;
 
+// ----------------------------
+// SEARCH RELEASES
+// ----------------------------
 async function scan(){
   const barcode = document.getElementById("barcode").value;
-  const condition = document.getElementById("condition").value;
+  selectedBarcode = barcode;
 
-  await fetch("/bulk-import", {
+  const res = await fetch("/search-releases",{
     method:"POST",
     headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ items:[{ barcode, condition }] })
-  });
-}
-
-// ----------------------------
-// BULK PREVIEW
-// ----------------------------
-function preview(){
-  const lines = document.getElementById("bulk")
-    .value.split("\\n")
-    .filter(Boolean);
-
-  previewData = lines.map(line => {
-    const parts = line.trim().split(" ");
-    return {
-      barcode: parts[0],
-      condition: parts[1] || "VG+"
-    };
+    body: JSON.stringify({ barcode })
   });
 
-  const box = document.getElementById("previewBox");
-  box.innerHTML = "<h4>Preview ("+previewData.length+")</h4>";
+  const data = await res.json();
 
-  previewData.forEach(i => {
+  const box = document.getElementById("results");
+  box.innerHTML = "<h4>Select Release</h4>";
+
+  data.results.forEach(r => {
     const div = document.createElement("div");
-    div.className = "small";
-    div.innerText = i.barcode + " • " + i.condition;
+    div.className = "release";
+
+    div.innerHTML = `
+      <b>${r.title}</b><br/>
+      ${r.year || "Unknown"} • ${r.country || "?"}<br/>
+      ${r.format || ""}<br/>
+    `;
+
+    div.onclick = () => importRelease(r.id);
+
     box.appendChild(div);
   });
 }
 
-async function bulk(){
-  await fetch("/bulk-import", {
+// ----------------------------
+// IMPORT SELECTED RELEASE
+// ----------------------------
+async function importRelease(id){
+  const condition = document.getElementById("condition").value;
+
+  await fetch("/bulk-import",{
     method:"POST",
     headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ items: previewData })
+    body: JSON.stringify({
+      items:[{ barcode:id, condition }]
+    })
   });
+}
 
-  previewData = [];
-  document.getElementById("previewBox").innerHTML = "";
+// ----------------------------
+// BULK
+// ----------------------------
+async function bulk(){
+  const condition = document.getElementById("condition").value;
+
+  const items = document.getElementById("bulk")
+    .value.split("\\n")
+    .filter(Boolean)
+    .map(b => ({ barcode:b, condition }));
+
+  await fetch("/bulk-import",{
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ items })
+  });
 }
 
 // ----------------------------
@@ -219,7 +207,6 @@ async function load(){
       "<b>"+i.artist+"</b><br/>" +
       i.title+"<br/>" +
       "$"+i.price+" • "+i.condition +
-      (i.note ? "<br/><span class='small'>"+i.note+"</span>" : "") +
       "</div>";
 
     log.appendChild(div);
@@ -237,26 +224,43 @@ load();
 });
 
 // ----------------------------
-// DISCOGS
+// MULTI RELEASE SEARCH
 // ----------------------------
-async function fetchDiscogs(barcode){
+app.post("/search-releases", async (req, res) => {
+  const { barcode } = req.body;
+
   try {
     const search = await fetch(
       `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
     ).then(r => r.json());
 
-    const result = search.results?.find(r =>
-      r.format?.includes("Vinyl")
-    );
+    const results = (search.results || []).slice(0, 6).map(r => ({
+      id: r.id,
+      title: r.title,
+      year: r.year,
+      country: r.country,
+      format: Array.isArray(r.format) ? r.format.join(", ") : r.format,
+      thumb: r.thumb
+    }));
 
-    if (!result) return null;
+    res.json({ results });
 
+  } catch {
+    res.json({ results: [] });
+  }
+});
+
+// ----------------------------
+// DISC PROCESSOR
+// ----------------------------
+async function fetchDiscogs(id){
+  try {
     const release = await fetch(
-      `https://api.discogs.com/releases/${result.id}?token=${process.env.DISCOGS_TOKEN}`
+      `https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`
     ).then(r => r.json());
 
     const stats = await fetch(
-      `https://api.discogs.com/marketplace/stats/${result.id}?token=${process.env.DISCOGS_TOKEN}`
+      `https://api.discogs.com/marketplace/stats/${id}?token=${process.env.DISCOGS_TOKEN}`
     ).then(r => r.json()).catch(() => null);
 
     const median = stats?.median_price || 20;
@@ -300,7 +304,7 @@ async function createShopifyProduct(item){
 }
 
 // ----------------------------
-// QUEUE (WITH DUPLICATE BLOCKING)
+// QUEUE
 // ----------------------------
 async function processQueue(){
   if (processing) return;
@@ -309,37 +313,24 @@ async function processQueue(){
   while(queue.length){
     const job = queue.shift();
 
-    // DUPLICATE CHECK
-    if (checkDuplicate(job.barcode)) {
-      addHistory(job.barcode, {
-        artist: "DUPLICATE",
-        title: "Already in inventory",
-        price: "0",
-        condition: job.condition,
-        image: ""
-      }, "SKIPPED DUPLICATE");
-
-      continue;
-    }
-
     const data = await fetchDiscogs(job.barcode);
     if (!data) continue;
 
-    const condition = job.condition || "VG+";
-    const multiplier = conditionMultiplier[condition] || 1;
+    const multiplier = conditionMultiplier[job.condition || "VG+"] || 1;
 
     let price = data.basePrice * multiplier;
     if (price < 8) price = 8;
 
     const item = {
       ...data,
-      condition,
+      condition: job.condition || "VG+",
       price: price.toFixed(2)
     };
 
-    saveInventory(job.barcode, item, condition);
+    inventory.set(job.barcode, item);
     await createShopifyProduct(item);
-    addHistory(job.barcode, item);
+
+    history.push(item);
   }
 
   processing = false;
@@ -361,5 +352,5 @@ app.get("/history",(req,res)=>{
 });
 
 app.listen(process.env.PORT || 10000, () => {
-  console.log("RETAIL SAFE MODE RUNNING");
+  console.log("MULTI RELEASE POS RUNNING");
 });
