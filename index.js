@@ -5,14 +5,27 @@ app.use(express.json());
 const fetch = global.fetch;
 
 // =========================
-// QUEUE + HISTORY (FIXED)
+// QUEUE + HISTORY (WORKING STATE)
 // =========================
 let queue = [];
 let processing = false;
 let history = [];
 
+// helper (DO NOT EDIT)
+function addHistory(barcode, status) {
+  history.push({
+    barcode,
+    status,
+    time: new Date().toISOString()
+  });
+
+  if (history.length > 100) {
+    history = history.slice(-100);
+  }
+}
+
 // =========================
-// FRONTEND (FULL POS UI)
+// FRONTEND UI
 // =========================
 app.get("/", (req, res) => {
   res.send(`
@@ -57,9 +70,7 @@ function log(msg){
   document.getElementById("log").prepend(div);
 }
 
-// =========================
-// SCAN
-// =========================
+// SINGLE SCAN
 async function scan(){
   const barcode = document.getElementById("barcode").value;
 
@@ -73,13 +84,9 @@ async function scan(){
   log("📦 " + barcode + " → QUEUED");
 }
 
-// =========================
-// BULK
-// =========================
+// BULK SCAN
 async function bulk(){
-  const lines = document.getElementById("bulk").value
-    .split("\\n")
-    .filter(Boolean);
+  const lines = document.getElementById("bulk").value.split("\\n").filter(Boolean);
 
   const items = lines.map(b => ({ barcode: b }));
 
@@ -93,9 +100,7 @@ async function bulk(){
   log("📦 BULK QUEUED: " + data.queued);
 }
 
-// =========================
 // CAMERA (basic)
-// =========================
 async function camera(){
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video:true });
@@ -108,17 +113,17 @@ async function camera(){
   }
 }
 
-// =========================
-// LIVE HISTORY POLLING (FIX)
-// =========================
+// LIVE HISTORY (FIXED)
 async function loadHistory(){
   const res = await fetch("/history");
   const data = await res.json();
 
+  const items = data.history || [];
+
   const logDiv = document.getElementById("log");
   logDiv.innerHTML = "";
 
-  data.slice().reverse().forEach(item => {
+  items.slice().reverse().forEach(item => {
     const div = document.createElement("div");
     div.className = "item";
     div.innerText = "📦 " + item.barcode + " → " + item.status;
@@ -137,7 +142,7 @@ loadHistory();
 });
 
 // =========================
-// DISCOGS (SAFE)
+// DISCOGS
 // =========================
 async function fetchDiscogs(barcode){
   try {
@@ -151,7 +156,7 @@ async function fetchDiscogs(barcode){
 }
 
 // =========================
-// SHOPIFY (SAFE)
+// SHOPIFY
 // =========================
 async function createShopifyProduct(item){
   const store = process.env.SHOPIFY_STORE;
@@ -163,7 +168,7 @@ async function createShopifyProduct(item){
     method:"POST",
     headers:{
       "Content-Type":"application/json",
-      "X-Shopify-Access-Token":token
+      "X-Shopify-Access-Token": token
     },
     body: JSON.stringify({
       product:{
@@ -175,7 +180,7 @@ async function createShopifyProduct(item){
 }
 
 // =========================
-// QUEUE PROCESSOR (FIXED + HISTORY)
+// QUEUE PROCESSOR (WORKING)
 // =========================
 async function processQueue(){
   if (processing) return;
@@ -191,10 +196,7 @@ async function processQueue(){
 
     await createShopifyProduct(discogs);
 
-    history.push({
-      barcode: job.barcode,
-      status: "IMPORTED"
-    });
+    addHistory(job.barcode, "IMPORTED");
   }
 
   processing = false;
@@ -211,20 +213,23 @@ app.post("/bulk-import", (req, res) => {
   items.forEach(i => queue.push(i));
 
   res.json({
-    success:true,
+    success: true,
     queued: items.length
   });
 });
 
 // =========================
-// HISTORY ENDPOINT (FIX)
+// HISTORY API
 // =========================
 app.get("/history", (req, res) => {
-  res.json(history);
+  res.json({
+    success: true,
+    history
+  });
 });
 
 // =========================
-// START
+// START SERVER
 // =========================
 const PORT = process.env.PORT || 10000;
 
