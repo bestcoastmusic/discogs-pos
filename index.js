@@ -4,35 +4,31 @@ app.use(express.json());
 
 const fetch = global.fetch;
 
-// =========================
-// STATE
-// =========================
 let queue = [];
 let processing = false;
 let history = [];
 
-// =========================
-// HISTORY HELP
-// =========================
+// --------------------
+// HISTORY
+// --------------------
 function addHistory(barcode, item) {
   history.push({
     barcode,
     artist: item?.artist || "Unknown Artist",
     title: item?.title || "Unknown Title",
-    status: "IMPORTED",
-    time: new Date().toISOString()
+    status: "IMPORTED"
   });
 
-  if (history.length > 100) {
-    history = history.slice(-100);
-  }
+  if (history.length > 100) history = history.slice(-100);
 }
 
-// =========================
-// FRONTEND UI
-// =========================
+// --------------------
+// UI (SAFE STRING - FIXED)
+// --------------------
 app.get("/", (req, res) => {
-  res.send(`
+  res.setHeader("Content-Type", "text/html");
+
+  res.end(`
 <!DOCTYPE html>
 <html>
 <head>
@@ -40,41 +36,29 @@ app.get("/", (req, res) => {
 <style>
 body { font-family: Arial; background:#111; color:#fff; text-align:center; padding:20px; }
 input, textarea { padding:10px; width:260px; margin:5px; }
-button { padding:10px 14px; margin:5px; cursor:pointer; background:#00c853; border:none; color:#fff; }
-#log { margin-top:20px; max-width:600px; margin:auto; text-align:left; }
-.item { background:#222; padding:8px; margin:5px; border-radius:6px; }
-video { width:300px; display:none; margin-top:10px; }
+button { padding:10px; margin:5px; }
+#log { text-align:left; max-width:600px; margin:auto; }
+.item { background:#222; margin:5px; padding:8px; }
+video { width:300px; display:none; }
 </style>
 </head>
 <body>
 
-<h1>🎧 POS SYSTEM</h1>
+<h1>POS SYSTEM</h1>
 
-<h3>Scan</h3>
 <input id="barcode" placeholder="barcode"/>
 <button onclick="scan()">Scan</button>
 
-<h3>Bulk</h3>
-<textarea id="bulk" rows="5" placeholder="one barcode per line"></textarea><br/>
-<button onclick="bulk()">Bulk Import</button>
+<textarea id="bulk" rows="4"></textarea>
+<button onclick="bulk()">Bulk</button>
 
-<h3>Camera</h3>
-<button onclick="camera()">📸 Camera</button>
+<button onclick="camera()">Camera</button>
 <video id="video" autoplay></video>
 
-<h3>Live Activity</h3>
 <div id="log"></div>
 
 <script>
 
-function log(msg){
-  const div = document.createElement("div");
-  div.className = "item";
-  div.innerText = msg;
-  document.getElementById("log").prepend(div);
-}
-
-// SCAN
 async function scan(){
   const barcode = document.getElementById("barcode").value;
 
@@ -83,57 +67,44 @@ async function scan(){
     headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({ items:[{ barcode }] })
   });
-
-  log("📦 " + barcode + " queued");
 }
 
-// BULK
 async function bulk(){
-  const lines = document.getElementById("bulk").value.split("\\n").filter(Boolean);
-  const items = lines.map(b => ({ barcode: b }));
+  const items = document.getElementById("bulk").value
+    .split("\\n")
+    .filter(Boolean)
+    .map(b => ({ barcode: b }));
 
   await fetch("/bulk-import", {
     method:"POST",
     headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({ items })
   });
-
-  log("📦 bulk queued: " + items.length);
 }
 
-// CAMERA
 async function camera(){
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video:true });
-    const video = document.getElementById("video");
-    video.style.display = "block";
-    video.srcObject = stream;
-    log("📸 camera started");
-  } catch (e) {
-    log("camera error: " + e.message);
-  }
+  const stream = await navigator.mediaDevices.getUserMedia({ video:true });
+  document.getElementById("video").srcObject = stream;
+  document.getElementById("video").style.display = "block";
 }
 
-// LIVE HISTORY
-async function loadHistory(){
+async function load(){
   const res = await fetch("/history");
   const data = await res.json();
 
-  const items = data.history || [];
-  const logDiv = document.getElementById("log");
+  const log = document.getElementById("log");
+  log.innerHTML = "";
 
-  logDiv.innerHTML = "";
-
-  items.slice().reverse().forEach(item => {
+  data.history.forEach(i => {
     const div = document.createElement("div");
     div.className = "item";
-    div.innerText = `📦 ${item.artist} - ${item.title} (${item.barcode})`;
-    logDiv.appendChild(div);
+    div.innerText = i.artist + " - " + i.title + " (" + i.barcode + ")";
+    log.appendChild(div);
   });
 }
 
-setInterval(loadHistory, 2000);
-loadHistory();
+setInterval(load, 2000);
+load();
 
 </script>
 
@@ -142,36 +113,33 @@ loadHistory();
   `);
 });
 
-// =========================
-// DISCOGS (REAL FIXED LOOKUP)
-// =========================
+// --------------------
+// DISCOGS (SAFE)
+// --------------------
 async function fetchDiscogs(barcode){
   try {
-    const searchUrl = `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`;
-    const searchRes = await fetch(searchUrl);
-    const searchData = await searchRes.json();
+    const res = await fetch(`https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`);
+    const data = await res.json();
 
-    const result = searchData.results?.[0];
-    if (!result || !result.id) return null;
+    const r = data.results?.[0];
+    if (!r) return null;
 
-    const releaseUrl = `https://api.discogs.com/releases/${result.id}?token=${process.env.DISCOGS_TOKEN}`;
-    const releaseRes = await fetch(releaseUrl);
-    const release = await releaseRes.json();
+    const release = await fetch(`https://api.discogs.com/releases/${r.id}?token=${process.env.DISCOGS_TOKEN}`)
+      .then(r => r.json());
 
     return {
-      artist: release.artists?.map(a => a.name).join(", ") || "Unknown Artist",
+      artist: release.artists?.[0]?.name || "Unknown Artist",
       title: release.title || "Unknown Title"
     };
 
   } catch (e) {
-    console.log("discogs error", e);
     return null;
   }
 }
 
-// =========================
-// SHOPIFY (FIXED PRICE)
-// =========================
+// --------------------
+// SHOPIFY
+// --------------------
 async function createShopifyProduct(item){
   const store = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_TOKEN;
@@ -186,38 +154,29 @@ async function createShopifyProduct(item){
     },
     body: JSON.stringify({
       product:{
-        title: item.title || "Unknown Record",
+        title: item.title,
         variants:[{ price:"20.00" }]
       }
     })
   });
 }
 
-// =========================
+// --------------------
 // QUEUE
-// =========================
+// --------------------
 async function processQueue(){
   if (processing) return;
   processing = true;
 
-  while(queue.length > 0){
+  while(queue.length){
     const job = queue.shift();
 
-    console.log("PROCESS:", job.barcode);
+    const item = await fetchDiscogs(job.barcode);
 
-    const discogs = await fetchDiscogs(job.barcode);
-
-    if (!discogs) {
-      addHistory(job.barcode, null);
-      continue;
+    if (item) {
+      await createShopifyProduct(item);
+      history.push({ barcode: job.barcode, ...item });
     }
-
-    await createShopifyProduct(discogs);
-
-    addHistory(job.barcode, {
-      artist: discogs.artist,
-      title: discogs.title
-    });
   }
 
   processing = false;
@@ -225,32 +184,21 @@ async function processQueue(){
 
 setInterval(processQueue, 1000);
 
-// =========================
-// BULK IMPORT
-// =========================
-app.post("/bulk-import", (req, res) => {
-  const items = req.body.items || [];
-
-  items.forEach(i => queue.push(i));
-
-  res.json({
-    success:true,
-    queued: items.length
-  });
+// --------------------
+// API
+// --------------------
+app.post("/bulk-import", (req,res)=>{
+  req.body.items.forEach(i => queue.push(i));
+  res.json({ success:true, queued:req.body.items.length });
 });
 
-// =========================
-// HISTORY API
-// =========================
-app.get("/history", (req, res) => {
+app.get("/history", (req,res)=>{
   res.json({ history });
 });
 
-// =========================
-// START SERVER
-// =========================
-const PORT = process.env.PORT || 10000;
-
-app.listen(PORT, () => {
-  console.log("🔥 POS RUNNING");
+// --------------------
+// START
+// --------------------
+app.listen(process.env.PORT || 10000, () => {
+  console.log("POS RUNNING");
 });
