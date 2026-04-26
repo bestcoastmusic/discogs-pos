@@ -4,19 +4,18 @@ app.use(express.json());
 
 const fetch = global.fetch;
 
+// ----------------------------
+// STATE
+// ----------------------------
 let queue = [];
 let processing = false;
 let history = [];
 let inventory = new Map();
 
 // ----------------------------
-// PRICING
+// PRICING (FIXED + CLEAN)
 // ----------------------------
-  "NM": 1.25,
-  "VG+": 1.0,
-  "VG": 0.8,
-  "G": 0.5
-};const conditionMultiplier = {
+const conditionMultiplier = {
   "M": 1.5,
   "NM": 1.25,
   "VG+": 1.0,
@@ -25,7 +24,7 @@ let inventory = new Map();
 };
 
 // ----------------------------
-// INVENTORY (C MODE)
+// INVENTORY (Inventory C mode)
 // ----------------------------
 function handleInventory(barcode, item, condition) {
   const existing = inventory.get(barcode);
@@ -36,7 +35,7 @@ function handleInventory(barcode, item, condition) {
       condition,
       status: "ACTIVE"
     });
-    return { action: "NEW" };
+    return "NEW";
   }
 
   inventory.set(barcode, {
@@ -46,7 +45,7 @@ function handleInventory(barcode, item, condition) {
     status: "UPDATED"
   });
 
-  return { action: "UPDATED" };
+  return "UPDATED";
 }
 
 // ----------------------------
@@ -62,7 +61,9 @@ function addHistory(barcode, item) {
     image: item.image
   });
 
-  if (history.length > 200) history = history.slice(-200);
+  if (history.length > 200) {
+    history = history.slice(-200);
+  }
 }
 
 // ----------------------------
@@ -80,31 +81,57 @@ body{margin:0;font-family:Arial;background:#0b0b0f;color:#fff}
 .container{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:10px}
 .panel{background:#15151c;padding:10px;border-radius:10px;height:80vh;overflow:auto}
 
-input,textarea{width:100%;padding:10px;margin-top:6px;background:#222;border:none;color:#fff;border-radius:6px}
-button{width:100%;padding:10px;margin-top:8px;background:#00e676;border:none;border-radius:6px;font-weight:bold}
+input,textarea,select{
+  width:100%;
+  padding:10px;
+  margin-top:6px;
+  background:#222;
+  border:none;
+  color:#fff;
+  border-radius:6px;
+}
 
-.item{display:flex;gap:10px;background:#222;margin:6px 0;padding:10px;border-radius:6px}
-.item img{width:60px;border-radius:4px}
+button{
+  width:100%;
+  padding:10px;
+  margin-top:8px;
+  background:#00e676;
+  border:none;
+  border-radius:6px;
+  font-weight:bold;
+}
+
+.item{
+  display:flex;
+  gap:10px;
+  background:#222;
+  margin:6px 0;
+  padding:10px;
+  border-radius:6px;
+}
+
+.item img{
+  width:60px;
+  border-radius:4px;
+}
+
 .small{font-size:12px;color:#aaa}
 </style>
 </head>
 <body>
 
 <div class="top">
-  <div>🎧 RETAIL POS V2</div>
+  <div>🎧 RETAIL POS SYSTEM</div>
   <div>LIVE</div>
 </div>
 
 <div class="container">
 
 <div class="panel">
+
 <h3>Scan</h3>
 <input id="barcode"/>
-  <option>VG+</option>
-  <option>NM</option>
-  <option>VG</option>
-  <option>G</option>
-</select>
+
 <select id="condition">
   <option>M</option>
   <option>NM</option>
@@ -112,14 +139,17 @@ button{width:100%;padding:10px;margin-top:8px;background:#00e676;border:none;bor
   <option>VG</option>
   <option>G</option>
 </select>
+
 <button onclick="scan()">SCAN</button>
 
 <h3>Bulk Import</h3>
 <textarea id="bulk" rows="6"></textarea>
-<button onclick="preview()">PREVIEW BULK</button>
-<button onclick="bulk()">CONFIRM IMPORT</button>
 
-<div id="previewBox"></div>
+<button onclick="previewBulk()">PREVIEW</button>
+<button onclick="confirmBulk()">IMPORT</button>
+
+<div id="preview"></div>
+
 </div>
 
 <div class="panel">
@@ -133,11 +163,14 @@ button{width:100%;padding:10px;margin-top:8px;background:#00e676;border:none;bor
 
 let previewData = [];
 
+// ----------------------------
+// SCAN
+// ----------------------------
 async function scan(){
   const barcode = document.getElementById("barcode").value;
   const condition = document.getElementById("condition").value;
 
-  await fetch("/bulk-import", {
+  await fetch("/bulk-import",{
     method:"POST",
     headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({ items:[{ barcode, condition }] })
@@ -145,9 +178,9 @@ async function scan(){
 }
 
 // ----------------------------
-// BULK PREVIEW MODE
+// BULK PREVIEW
 // ----------------------------
-function preview(){
+function previewBulk(){
   const lines = document.getElementById("bulk")
     .value.split("\\n")
     .filter(Boolean);
@@ -161,7 +194,7 @@ function preview(){
     };
   });
 
-  const box = document.getElementById("previewBox");
+  const box = document.getElementById("preview");
   box.innerHTML = "<h4>Preview ("+previewData.length+")</h4>";
 
   previewData.forEach(i => {
@@ -172,17 +205,20 @@ function preview(){
   });
 }
 
-async function bulk(){
+// ----------------------------
+// BULK CONFIRM
+// ----------------------------
+async function confirmBulk(){
   if (!previewData.length) return;
 
-  await fetch("/bulk-import", {
+  await fetch("/bulk-import",{
     method:"POST",
     headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({ items: previewData })
   });
 
   previewData = [];
-  document.getElementById("previewBox").innerHTML = "";
+  document.getElementById("preview").innerHTML = "";
 }
 
 // ----------------------------
@@ -222,7 +258,7 @@ load();
 });
 
 // ----------------------------
-// DISCOGS
+// DISCOGS FETCH
 // ----------------------------
 async function fetchDiscogs(barcode){
   try {
@@ -285,7 +321,7 @@ async function createShopifyProduct(item){
 }
 
 // ----------------------------
-// QUEUE
+// QUEUE PROCESSOR
 // ----------------------------
 async function processQueue(){
   if (processing) return;
@@ -331,6 +367,7 @@ app.get("/history",(req,res)=>{
   res.json({ history });
 });
 
+// ----------------------------
 app.listen(process.env.PORT || 10000, () => {
-  console.log("RETAIL V2 RUNNING");
+  console.log("RETAIL POS CLEAN RUNNING");
 });
