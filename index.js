@@ -8,62 +8,18 @@ const fetch = global.fetch;
 // STATE
 // ----------------------------
 let queue = [];
-let processing = false;
 let history = [];
-let inventory = new Map();
 
 // ----------------------------
 // PRICING
 // ----------------------------
 const conditionMultiplier = {
-  "M": 1.5,
-  "NM": 1.25,
+  M: 1.5,
+  NM: 1.25,
   "VG+": 1.0,
-  "VG": 0.8,
-  "G": 0.5
+  VG: 0.8,
+  G: 0.5
 };
-
-// ----------------------------
-// SHOPIFY
-// ----------------------------
-async function createShopifyProduct(item) {
-  const store = process.env.SHOPIFY_STORE;
-  const token = process.env.SHOPIFY_TOKEN;
-
-  if (!store || !token) {
-    console.log("❌ Missing Shopify env");
-    return;
-  }
-
-  try {
-    const res = await fetch(`https://${store}/admin/api/2024-01/products.json`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": token
-      },
-      body: JSON.stringify({
-        product: {
-          title: item.title,
-          body_html: `<strong>${item.artist}</strong>`,
-          images: item.image ? [{ src: item.image }] : [],
-          variants: [{ price: item.price }]
-        }
-      })
-    });
-
-    const data = await res.json();
-
-    if (!res.ok) {
-      console.log("❌ Shopify error:", data);
-    } else {
-      console.log("✅ Shopify created:", data.product?.id);
-    }
-
-  } catch (err) {
-    console.log("❌ Shopify crash:", err.message);
-  }
-}
 
 // ----------------------------
 // FRONTEND
@@ -80,8 +36,7 @@ body{margin:0;font-family:Arial;background:#0b0b0f;color:#fff}
 .panel{background:#15151c;padding:10px;border-radius:10px;height:90vh;overflow:auto}
 input,textarea,select,button{width:100%;padding:10px;margin-top:6px}
 button{background:#00e676;border:none;font-weight:bold;border-radius:6px}
-.card{background:#222;padding:10px;margin:6px 0;border-radius:6px}
-.small{font-size:12px;color:#aaa}
+.card{background:#222;padding:10px;margin:6px 0;border-radius:6px;cursor:pointer}
 </style>
 </head>
 <body>
@@ -90,22 +45,25 @@ button{background:#00e676;border:none;font-weight:bold;border-radius:6px}
 
 <div class="panel">
 <h3>Scan</h3>
-<input id="barcode"/>
+
+<input id="barcode" placeholder="scan barcode"/>
+
 <select id="condition">
-  <option>M</option>
-  <option>NM</option>
-  <option>VG+</option>
-  <option>VG</option>
-  <option>G</option>
+<option>M</option>
+<option>NM</option>
+<option>VG+</option>
+<option>VG</option>
+<option>G</option>
 </select>
 
 <button id="scanBtn">Search</button>
 
 <div id="results"></div>
 
-<h3>Bulk</h3>
+<h3>Bulk Import</h3>
 <textarea id="bulk"></textarea>
 <button id="bulkBtn">Preview Bulk</button>
+
 </div>
 
 <div class="panel">
@@ -118,7 +76,7 @@ button{background:#00e676;border:none;font-weight:bold;border-radius:6px}
 <script>
 
 // ----------------------------
-// SCAN (SAFE BINDING)
+// SEARCH
 // ----------------------------
 document.getElementById("scanBtn").addEventListener("click", scan);
 
@@ -134,7 +92,7 @@ async function scan(){
   const data = await res.json();
 
   const box = document.getElementById("results");
-  box.innerHTML = "<h4>Select Release</h4>";
+  box.innerHTML = "";
 
   data.results.forEach(r => {
     const div = document.createElement("div");
@@ -151,7 +109,7 @@ async function scan(){
 }
 
 // ----------------------------
-// IMPORT
+// IMPORT SINGLE
 // ----------------------------
 async function importItem(id){
   const condition = document.getElementById("condition").value;
@@ -166,7 +124,7 @@ async function importItem(id){
 }
 
 // ----------------------------
-// BULK PREVIEW (SAFE)
+// BULK
 // ----------------------------
 document.getElementById("bulkBtn").addEventListener("click", bulk);
 
@@ -184,7 +142,7 @@ async function bulk(){
   const data = await res.json();
 
   const box = document.getElementById("results");
-  box.innerHTML = "<h4>Bulk Preview</h4>";
+  box.innerHTML = "";
 
   data.results.forEach((r,i) => {
 
@@ -192,12 +150,12 @@ async function bulk(){
     div.className = "card";
 
     const title = document.createElement("div");
-    title.textContent = (r.title || "Unknown") + " " + (r.year || "");
+    title.textContent = r.title || "Unknown";
 
     const select = document.createElement("select");
-    select.id = "cond-" + i;
+    select.id = "c-" + i;
 
-    ["VG+","VG","NM","M"].forEach(c => {
+    ["M","NM","VG+","VG","G"].forEach(c => {
       const opt = document.createElement("option");
       opt.value = c;
       opt.textContent = c;
@@ -223,7 +181,7 @@ async function bulk(){
 // BULK CONFIRM
 // ----------------------------
 async function confirmBulk(id,i){
-  const condition = document.getElementById("cond-" + i).value;
+  const condition = document.getElementById("c-" + i).value;
 
   await fetch("/import",{
     method:"POST",
@@ -249,9 +207,7 @@ async function load(){
     div.className = "card";
 
     div.textContent =
-      i.artist + " - " +
-      i.title + " $" +
-      i.price;
+      i.title + " - $" + i.price + " (" + i.condition + ")";
 
     log.appendChild(div);
   });
@@ -268,7 +224,7 @@ load();
 });
 
 // ----------------------------
-// SEARCH
+// SEARCH (DISCOGS)
 // ----------------------------
 app.post("/search", async (req, res) => {
   const { barcode } = req.body;
@@ -320,7 +276,7 @@ app.post("/bulk-preview", async (req, res) => {
 });
 
 // ----------------------------
-// RELEASE
+// RELEASE FETCH
 // ----------------------------
 async function fetchRelease(id){
   const r = await fetch(
@@ -332,9 +288,8 @@ async function fetchRelease(id){
   ).then(x => x.json()).catch(() => null);
 
   return {
-    artist: r.artists?.[0]?.name || "Unknown",
     title: r.title || "Unknown",
-    image: r.images?.[0]?.uri || "",
+    artist: r.artists?.[0]?.name || "Unknown",
     basePrice: stats?.median_price || 20
   };
 }
@@ -342,43 +297,40 @@ async function fetchRelease(id){
 // ----------------------------
 // QUEUE
 // ----------------------------
-app.post("/import",(req,res)=>{
+app.post("/import", (req, res) => {
   const items = req.body.items || [];
-  items.forEach(i => queue.push(i));
-  res.json({ success:true });
+  queue.push(...items);
+
+  res.json({ success: true, queued: items.length });
 });
 
 async function processQueue(){
-  if (processing) return;
-  processing = true;
+  if (queue.length === 0) return;
 
-  while(queue.length){
-    const job = queue.shift();
+  const job = queue.shift();
 
-    const data = await fetchRelease(job.id);
+  const data = await fetchRelease(job.id);
 
-    const price = (data.basePrice * (conditionMultiplier[job.condition] || 1)).toFixed(2);
+  const price = (data.basePrice * (conditionMultiplier[job.condition] || 1)).toFixed(2);
 
-    const item = {
-      ...data,
-      condition: job.condition,
-      price
-    };
+  const item = {
+    ...data,
+    condition: job.condition,
+    price
+  };
 
-    history.push(item);
-
-    await createShopifyProduct(item);
-  }
-
-  processing = false;
+  history.push(item);
 }
 
-setInterval(processQueue,1000);
+setInterval(processQueue, 1000);
 
-app.get("/history",(req,res)=>{
+// ----------------------------
+// HISTORY
+// ----------------------------
+app.get("/history", (req, res) => {
   res.json({ history });
 });
 
 app.listen(process.env.PORT || 10000, () => {
-  console.log("PRO POS SAFE RUNNING");
+  console.log("POS RUNNING CLEAN");
 });
