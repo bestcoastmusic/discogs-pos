@@ -5,7 +5,7 @@ app.use(express.json());
 app.use(express.static("public"));
 
 // ----------------------------
-// COLOR DETECTION (REAL)
+// COLOR DETECTION (FROM FORMATS)
 // ----------------------------
 function detectColorFromFormats(formats = []) {
   const text = JSON.stringify(formats).toLowerCase();
@@ -48,7 +48,7 @@ const conditionMultiplier = {
 };
 
 // ----------------------------
-// FETCH RELEASE FULL DATA
+// FETCH FULL RELEASE
 // ----------------------------
 async function fetchRelease(id) {
   try {
@@ -79,7 +79,7 @@ async function fetchRelease(id) {
 }
 
 // ----------------------------
-// SEARCH (NOW ACCURATE)
+// SEARCH (ACCURATE PREVIEW)
 // ----------------------------
 app.post("/search", async (req, res) => {
   const { barcode } = req.body;
@@ -91,7 +91,6 @@ app.post("/search", async (req, res) => {
 
     const top = (data.results || []).slice(0, 5);
 
-    // 🔥 fetch full release data for each result
     const results = await Promise.all(
       top.map(async (r) => {
         const full = await fetchRelease(r.id);
@@ -118,7 +117,7 @@ app.post("/search", async (req, res) => {
 });
 
 // ----------------------------
-// BULK PREVIEW (ACCURATE)
+// BULK PREVIEW (ACCURATE + MULTI OPTION)
 // ----------------------------
 app.post("/bulk-preview", async (req, res) => {
   const { items } = req.body;
@@ -163,7 +162,7 @@ app.post("/bulk-preview", async (req, res) => {
 });
 
 // ----------------------------
-// IMPORT (WITH DUPES)
+// IMPORT (WITH DUPLICATES)
 // ----------------------------
 app.post("/import", (req, res) => {
   const items = req.body.items || [];
@@ -185,7 +184,7 @@ app.post("/import", (req, res) => {
 });
 
 // ----------------------------
-// QUEUE PROCESSOR
+// PROCESS QUEUE
 // ----------------------------
 async function processQueue() {
   if (!queue.length) return;
@@ -207,7 +206,7 @@ async function processQueue() {
 
   history.push(item);
 
-  console.log("📦 Added:", item.title, "|", item.color);
+  console.log("📦 Added:", item.title, "|", item.color, "|", item.condition);
 }
 
 setInterval(processQueue, 1000);
@@ -221,5 +220,5 @@ app.get("/history", (req, res) => {
 
 // ----------------------------
 app.listen(process.env.PORT || 10000, () => {
-  console.log("🚀 POS RUNNING (ACCURATE PREVIEW MODE)");
+  console.log("🚀 POS RUNNING (FULL SYSTEM)");
 });
