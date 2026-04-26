@@ -5,20 +5,20 @@ app.use(express.json());
 const fetch = global.fetch;
 
 // =========================
-// QUEUE + HISTORY
+// STATE
 // =========================
 let queue = [];
 let processing = false;
 let history = [];
 
 // =========================
-// HISTORY HELPER
+// HISTORY HELP
 // =========================
 function addHistory(barcode, item) {
   history.push({
     barcode,
-    title: item?.title || "Unknown Title",
     artist: item?.artist || "Unknown Artist",
+    title: item?.title || "Unknown Title",
     status: "IMPORTED",
     time: new Date().toISOString()
   });
@@ -36,30 +36,30 @@ app.get("/", (req, res) => {
 <!DOCTYPE html>
 <html>
 <head>
-<title>Best Coast POS</title>
+<title>POS</title>
 <style>
 body { font-family: Arial; background:#111; color:#fff; text-align:center; padding:20px; }
 input, textarea { padding:10px; width:260px; margin:5px; }
-button { padding:10px 14px; margin:5px; cursor:pointer; background:#00c853; color:#fff; border:none; border-radius:6px; }
-#log { margin-top:20px; text-align:left; max-width:600px; margin:auto; }
+button { padding:10px 14px; margin:5px; cursor:pointer; background:#00c853; border:none; color:#fff; }
+#log { margin-top:20px; max-width:600px; margin:auto; text-align:left; }
 .item { background:#222; padding:8px; margin:5px; border-radius:6px; }
 video { width:300px; display:none; margin-top:10px; }
 </style>
 </head>
 <body>
 
-<h1>🎧 Best Coast POS</h1>
+<h1>🎧 POS SYSTEM</h1>
 
-<h3>Single Scan</h3>
+<h3>Scan</h3>
 <input id="barcode" placeholder="barcode"/>
 <button onclick="scan()">Scan</button>
 
-<h3>Bulk Scan</h3>
+<h3>Bulk</h3>
 <textarea id="bulk" rows="5" placeholder="one barcode per line"></textarea><br/>
-<button onclick="bulk()">Run Bulk</button>
+<button onclick="bulk()">Bulk Import</button>
 
 <h3>Camera</h3>
-<button onclick="camera()">📸 Open Camera</button>
+<button onclick="camera()">📸 Camera</button>
 <video id="video" autoplay></video>
 
 <h3>Live Activity</h3>
@@ -74,78 +74,60 @@ function log(msg){
   document.getElementById("log").prepend(div);
 }
 
-// =========================
-// SINGLE SCAN
-// =========================
+// SCAN
 async function scan(){
   const barcode = document.getElementById("barcode").value;
 
-  const res = await fetch("/bulk-import", {
+  await fetch("/bulk-import", {
     method:"POST",
     headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({ items:[{ barcode }] })
   });
 
-  const data = await res.json();
-  log("📦 " + barcode + " → QUEUED");
+  log("📦 " + barcode + " queued");
 }
 
-// =========================
 // BULK
-// =========================
 async function bulk(){
   const lines = document.getElementById("bulk").value.split("\\n").filter(Boolean);
-
   const items = lines.map(b => ({ barcode: b }));
 
-  const res = await fetch("/bulk-import", {
+  await fetch("/bulk-import", {
     method:"POST",
     headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({ items })
   });
 
-  const data = await res.json();
-  log("📦 BULK QUEUED: " + data.queued);
+  log("📦 bulk queued: " + items.length);
 }
 
-// =========================
 // CAMERA
-// =========================
 async function camera(){
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video:true });
     const video = document.getElementById("video");
     video.style.display = "block";
     video.srcObject = stream;
-    log("📸 Camera started");
+    log("📸 camera started");
   } catch (e) {
-    log("❌ Camera error: " + e.message);
+    log("camera error: " + e.message);
   }
 }
 
-// =========================
 // LIVE HISTORY
-// =========================
 async function loadHistory(){
   const res = await fetch("/history");
   const data = await res.json();
 
   const items = data.history || [];
-
   const logDiv = document.getElementById("log");
+
   logDiv.innerHTML = "";
 
   items.slice().reverse().forEach(item => {
     const div = document.createElement("div");
     div.className = "item";
-
-    div.innerText =
-      "📦 " +
-      (item.artist || "Unknown Artist") +
-      " - " +
-      (item.title || "Unknown Title") +
-      " (" + item.barcode + ")";
-
+    div.innerText = `📦 ${item.artist} - ${item.title} (${item.barcode})`;
     logDiv.appendChild(div);
   });
 }
@@ -161,30 +143,34 @@ loadHistory();
 });
 
 // =========================
-// DISCOGS
+// DISCOGS (REAL FIXED LOOKUP)
 // =========================
 async function fetchDiscogs(barcode){
   try {
-    const url = `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`;
-    const res = await fetch(url);
-    const data = await res.json();
+    const searchUrl = `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`;
+    const searchRes = await fetch(searchUrl);
+    const searchData = await searchRes.json();
 
-    const result = data.results?.[0];
+    const result = searchData.results?.[0];
+    if (!result || !result.id) return null;
 
-    if (!result) return null;
+    const releaseUrl = `https://api.discogs.com/releases/${result.id}?token=${process.env.DISCOGS_TOKEN}`;
+    const releaseRes = await fetch(releaseUrl);
+    const release = await releaseRes.json();
 
     return {
-      title: result.title,
-      artist: result.artist || "Unknown Artist"
+      artist: release.artists?.map(a => a.name).join(", ") || "Unknown Artist",
+      title: release.title || "Unknown Title"
     };
 
   } catch (e) {
+    console.log("discogs error", e);
     return null;
   }
 }
 
 // =========================
-// SHOPIFY (FIXED PRICE = $20)
+// SHOPIFY (FIXED PRICE)
 // =========================
 async function createShopifyProduct(item){
   const store = process.env.SHOPIFY_STORE;
@@ -201,19 +187,14 @@ async function createShopifyProduct(item){
     body: JSON.stringify({
       product:{
         title: item.title || "Unknown Record",
-        variants:[
-          {
-            price: "20.00",
-            inventory_quantity: 1
-          }
-        ]
+        variants:[{ price:"20.00" }]
       }
     })
   });
 }
 
 // =========================
-// QUEUE PROCESSOR
+// QUEUE
 // =========================
 async function processQueue(){
   if (processing) return;
@@ -233,7 +214,10 @@ async function processQueue(){
 
     await createShopifyProduct(discogs);
 
-    addHistory(job.barcode, discogs);
+    addHistory(job.barcode, {
+      artist: discogs.artist,
+      title: discogs.title
+    });
   }
 
   processing = false;
@@ -259,10 +243,7 @@ app.post("/bulk-import", (req, res) => {
 // HISTORY API
 // =========================
 app.get("/history", (req, res) => {
-  res.json({
-    success:true,
-    history
-  });
+  res.json({ history });
 });
 
 // =========================
@@ -272,5 +253,4 @@ const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
   console.log("🔥 POS RUNNING");
-  console.log("🚀 PORT:", PORT);
 });
