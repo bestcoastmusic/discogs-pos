@@ -4,37 +4,36 @@ const app = express();
 app.use(express.json());
 app.use(express.static("public"));
 
-const fetch = global.fetch;
 
+// ----------------------------
+// STATEconst fetch = global.fetch;
 const fetch = global.fetch;
 
 // ----------------------------
 // HELPER: COLOR DETECTION
 // ----------------------------
 function detectColor(text = "") {
-  const patterns = [
+  const colors = [
     "Red","Blue","Green","Yellow","Orange","Purple",
     "Pink","White","Clear","Gold","Silver",
     "Smoke","Smokey","Marble","Splatter","Translucent"
   ];
 
-  const found = patterns.filter(c =>
+  const found = colors.find(c =>
     text.toLowerCase().includes(c.toLowerCase())
   );
 
-  if (found.length > 1) {
-    return found.join(" / ");
-  }
-
-  return found[0] || "Black";
+  return found || "Black";
 }
 
 // ----------------------------
 // STATE
 // ----------------------------
+// STATE
+// ----------------------------
 let queue = [];
 let history = [];
-let inventory = new Set();
+let inventory = new Set(); // prevents duplicates
 
 // ----------------------------
 // PRICING
