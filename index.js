@@ -4,10 +4,6 @@ const app = express();
 app.use(express.json());
 app.use(express.static("public"));
 
-const fetch = global.fetch;
-
-const fetch = global.fetch;
-
 // ----------------------------
 // HELPER: COLOR DETECTION
 // ----------------------------
