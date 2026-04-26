@@ -11,7 +11,7 @@ const fetch = global.fetch;
 // ----------------------------
 let queue = [];
 let history = [];
-let inventory = new Set(); // duplicate prevention
+let inventory = new Set(); // prevents duplicates
 
 // ----------------------------
 // PRICING
@@ -76,7 +76,7 @@ async function createShopifyProduct(item) {
 }
 
 // ----------------------------
-// SEARCH (MULTI RESULT)
+// SEARCH
 // ----------------------------
 app.post("/search", async (req, res) => {
   const { barcode } = req.body;
@@ -105,7 +105,7 @@ app.post("/search", async (req, res) => {
 });
 
 // ----------------------------
-// BULK PREVIEW
+// BULK PREVIEW (MULTI OPTION)
 // ----------------------------
 app.post("/bulk-preview", async (req, res) => {
   const { items } = req.body;
@@ -116,16 +116,19 @@ app.post("/bulk-preview", async (req, res) => {
         `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
       ).then(r => r.json());
 
-      const r = (data.results || [])[0];
+      const options = (data.results || []).slice(0, 5).map(r => ({
+        id: r.id,
+        title: r.title,
+        year: r.year,
+        country: r.country,
+        format: Array.isArray(r.format) ? r.format.join(", ") : r.format,
+        label: r.label?.[0],
+        thumb: r.thumb
+      }));
 
       return {
-        id: r?.id,
-        title: r?.title,
-        year: r?.year,
-        country: r?.country,
-        format: Array.isArray(r?.format) ? r.format.join(", ") : r?.format,
-        label: r?.label?.[0],
-        thumb: r?.thumb
+        barcode,
+        options
       };
     }));
 
@@ -138,24 +141,33 @@ app.post("/bulk-preview", async (req, res) => {
 });
 
 // ----------------------------
-// IMPORT → QUEUE
+// IMPORT (WITH DUPLICATE CHECK)
 // ----------------------------
 app.post("/import", (req, res) => {
   const items = req.body.items || [];
 
+  let added = [];
+  let duplicates = [];
+
   items.forEach(i => {
-    if (!inventory.has(i.id)) {
-      queue.push(i);
+    if (inventory.has(i.id)) {
+      duplicates.push(i.id);
     } else {
-      console.log("⚠️ Duplicate skipped:", i.id);
+      queue.push(i);
+      inventory.add(i.id);
+      added.push(i.id);
     }
   });
 
-  res.json({ success: true, queued: items.length });
+  res.json({
+    success: true,
+    added,
+    duplicates
+  });
 });
 
 // ----------------------------
-// FETCH FULL RELEASE DATA
+// FETCH RELEASE
 // ----------------------------
 async function fetchRelease(id) {
   try {
@@ -192,8 +204,6 @@ async function processQueue() {
 
   const job = queue.shift();
 
-  if (inventory.has(job.id)) return;
-
   const data = await fetchRelease(job.id);
   if (!data) return;
 
@@ -208,7 +218,6 @@ async function processQueue() {
     price: price.toFixed(2)
   };
 
-  inventory.add(job.id);
   history.push(item);
 
   console.log("📦 Added:", item.title, "$" + item.price);
@@ -227,5 +236,5 @@ app.get("/history", (req, res) => {
 
 // ----------------------------
 app.listen(process.env.PORT || 10000, () => {
-  console.log("🚀 FULL POS RUNNING");
+  console.log("🚀 POS RUNNING");
 });

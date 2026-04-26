@@ -14,8 +14,6 @@ window.onload = function(){
 // SCAN
 // ----------------------------
 async function scan(){
-  console.log("SCAN CLICKED");
-
   const barcode = document.getElementById("barcode").value;
 
   const res = await fetch("/search", {
@@ -47,25 +45,30 @@ async function scan(){
 }
 
 // ----------------------------
-// IMPORT
+// IMPORT (WITH DUPLICATE ALERT)
 // ----------------------------
 async function importItem(id){
   const condition = document.getElementById("condition").value;
 
-  await fetch("/import", {
+  const res = await fetch("/import", {
     method:"POST",
     headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({
       items:[{ id, condition }]
     })
   });
+
+  const data = await res.json();
+
+  if (data.duplicates && data.duplicates.length > 0) {
+    alert("⚠️ Duplicate already added!");
+  }
 }
 
 // ----------------------------
-// BULK PREVIEW + ADD
+// BULK PREVIEW (MULTI OPTION)
 // ----------------------------
 async function bulk(){
-  console.log("BULK CLICKED");
 
   const lines = document.getElementById("bulk").value
     .split("\n")
@@ -80,55 +83,74 @@ async function bulk(){
   const data = await res.json();
 
   const box = document.getElementById("results");
-  box.innerHTML = "<h4>Bulk Preview</h4>";
+  box.innerHTML = "<h4>Bulk Preview (Choose Pressing)</h4>";
 
-  data.results.forEach((r,i) => {
+  data.results.forEach((item,i) => {
 
     const div = document.createElement("div");
     div.className = "card";
 
-    const title = document.createElement("div");
-    title.innerHTML =
-      "<img src='" + (r.thumb || "") + "' width='60'/>" +
-      "<b>" + (r.title || "Unknown") + "</b><br/>" +
-      (r.year || "") + " • " + (r.country || "") + "<br/>" +
-      "<small>" + (r.label || "") + "</small>";
+    const img = document.createElement("img");
+    img.src = item.options[0]?.thumb || "";
+    img.width = 60;
 
-    const select = document.createElement("select");
-    select.id = "c-" + i;
+    const selectRelease = document.createElement("select");
+    selectRelease.id = "release-" + i;
+
+    item.options.forEach(opt => {
+      const o = document.createElement("option");
+      o.value = opt.id;
+      o.textContent =
+        opt.title + " (" +
+        (opt.year || "") + " • " +
+        (opt.country || "") + ")";
+      selectRelease.appendChild(o);
+    });
+
+    selectRelease.onchange = function(){
+      const selected = item.options.find(o => o.id == selectRelease.value);
+      img.src = selected?.thumb || "";
+    };
+
+    const selectCondition = document.createElement("select");
+    selectCondition.id = "cond-" + i;
 
     ["M","NM","VG+","VG","G"].forEach(c => {
-      const opt = document.createElement("option");
-      opt.value = c;
-      opt.textContent = c;
-      select.appendChild(opt);
+      const o = document.createElement("option");
+      o.value = c;
+      o.textContent = c;
+      selectCondition.appendChild(o);
     });
 
     const btn = document.createElement("button");
     btn.textContent = "Add to Queue";
 
-    btn.onclick = () => confirmBulk(r.id, i);
+    btn.onclick = async () => {
 
-    div.appendChild(title);
-    div.appendChild(select);
+      const id = selectRelease.value;
+      const condition = selectCondition.value;
+
+      const res = await fetch("/import", {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({
+          items:[{ id, condition }]
+        })
+      });
+
+      const data = await res.json();
+
+      if (data.duplicates && data.duplicates.length > 0) {
+        alert("⚠️ Duplicate skipped!");
+      }
+    };
+
+    div.appendChild(img);
+    div.appendChild(selectRelease);
+    div.appendChild(selectCondition);
     div.appendChild(btn);
 
     box.appendChild(div);
-  });
-}
-
-// ----------------------------
-// BULK CONFIRM
-// ----------------------------
-async function confirmBulk(id,i){
-  const condition = document.getElementById("c-" + i).value;
-
-  await fetch("/import", {
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({
-      items:[{ id, condition }]
-    })
   });
 }
 
