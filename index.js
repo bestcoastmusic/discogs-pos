@@ -4,6 +4,8 @@ const app = express();
 app.use(express.json());
 app.use(express.static("public"));
 
+const fetch = global.fetch;
+
 // ----------------------------
 // HELPER: COLOR DETECTION
 // ----------------------------
@@ -18,10 +20,7 @@ function detectColor(text = "") {
     text.toLowerCase().includes(c.toLowerCase())
   );
 
-  if (found.length > 1) {
-    return found.join(" / ");
-  }
-
+  if (found.length > 1) return found.join(" / ");
   return found[0] || "Black";
 }
 
@@ -50,13 +49,10 @@ async function createShopifyProduct(item) {
   const store = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_TOKEN;
 
-  if (!store || !token) {
-    console.log("❌ Shopify env missing");
-    return;
-  }
+  if (!store || !token) return;
 
   try {
-    const res = await fetch(`https://${store}/admin/api/2024-01/products.json`, {
+    await fetch(`https://${store}/admin/api/2024-01/products.json`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -69,28 +65,16 @@ async function createShopifyProduct(item) {
             <strong>${item.artist}</strong><br/>
             ${item.year || ""} ${item.country || ""}<br/>
             ${item.label || ""}<br/>
+            Color: ${item.color}<br/>
             Condition: ${item.condition}
           `,
           images: item.image ? [{ src: item.image }] : [],
-          variants: [
-            {
-              price: item.price
-            }
-          ]
+          variants: [{ price: item.price }]
         }
       })
     });
-
-    const data = await res.json();
-
-    if (!res.ok) {
-      console.log("❌ Shopify error:", data);
-    } else {
-      console.log("✅ Shopify created:", data.product?.id);
-    }
-
   } catch (err) {
-    console.log("❌ Shopify crash:", err.message);
+    console.log("Shopify error:", err.message);
   }
 }
 
@@ -105,26 +89,32 @@ app.post("/search", async (req, res) => {
       `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
     ).then(r => r.json());
 
-    const results = (data.results || []).slice(0, 10).map(r => ({
-      id: r.id,
-      title: r.title,
-      year: r.year,
-      country: r.country,
-      format: Array.isArray(r.format) ? r.format.join(", ") : r.format,
-      label: r.label?.[0],
-      thumb: r.thumb
-    }));
+    const results = (data.results || []).slice(0, 10).map(r => {
+      const text =
+        (r.title || "") + " " +
+        (Array.isArray(r.format) ? r.format.join(" ") : r.format || "");
+
+      return {
+        id: r.id,
+        title: r.title,
+        year: r.year,
+        country: r.country,
+        format: Array.isArray(r.format) ? r.format.join(", ") : r.format,
+        label: r.label?.[0],
+        thumb: r.thumb,
+        color: detectColor(text)
+      };
+    });
 
     res.json({ results });
 
-  } catch (err) {
-    console.log("search error:", err.message);
+  } catch {
     res.json({ results: [] });
   }
 });
 
 // ----------------------------
-// BULK PREVIEW (MULTI OPTION)
+// BULK PREVIEW
 // ----------------------------
 app.post("/bulk-preview", async (req, res) => {
   const { items } = req.body;
@@ -135,84 +125,76 @@ app.post("/bulk-preview", async (req, res) => {
         `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
       ).then(r => r.json());
 
-      const options = (data.results || []).slice(0, 5).map(r => ({
-        id: r.id,
-        title: r.title,
-        year: r.year,
-        country: r.country,
-        format: Array.isArray(r.format) ? r.format.join(", ") : r.format,
-        label: r.label?.[0],
-        thumb: r.thumb
-      }));
+      const options = (data.results || []).slice(0, 5).map(r => {
+        const text =
+          (r.title || "") + " " +
+          (Array.isArray(r.format) ? r.format.join(" ") : r.format || "");
 
-      return {
-        barcode,
-        options
-      };
+        return {
+          id: r.id,
+          title: r.title,
+          year: r.year,
+          country: r.country,
+          thumb: r.thumb,
+          color: detectColor(text)
+        };
+      });
+
+      return { barcode, options };
     }));
 
     res.json({ results });
 
-  } catch (err) {
-    console.log("bulk preview error:", err.message);
+  } catch {
     res.json({ results: [] });
   }
 });
 
 // ----------------------------
-// IMPORT (WITH DUPLICATE CHECK)
+// IMPORT
 // ----------------------------
 app.post("/import", (req, res) => {
   const items = req.body.items || [];
 
-  let added = [];
   let duplicates = [];
+  let added = [];
 
   items.forEach(i => {
     if (inventory.has(i.id)) {
       duplicates.push(i.id);
     } else {
-      queue.push(i);
       inventory.add(i.id);
+      queue.push(i);
       added.push(i.id);
     }
   });
 
-  res.json({
-    success: true,
-    added,
-    duplicates
-  });
+  res.json({ success: true, duplicates, added });
 });
 
 // ----------------------------
 // FETCH RELEASE
 // ----------------------------
 async function fetchRelease(id) {
-  try {
-    const r = await fetch(
-      `https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`
-    ).then(x => x.json());
+  const r = await fetch(
+    `https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`
+  ).then(x => x.json());
 
-    const stats = await fetch(
-      `https://api.discogs.com/marketplace/stats/${id}?token=${process.env.DISCOGS_TOKEN}`
-    ).then(x => x.json()).catch(() => null);
+  const stats = await fetch(
+    `https://api.discogs.com/marketplace/stats/${id}?token=${process.env.DISCOGS_TOKEN}`
+  ).then(x => x.json()).catch(() => null);
 
-    return {
-      id,
-      artist: r.artists?.[0]?.name || "Unknown Artist",
-      title: r.title || "Unknown Title",
-      year: r.year,
-      country: r.country,
-      label: r.labels?.[0]?.name,
-      image: r.images?.[0]?.uri,
-      basePrice: stats?.median_price || 20
-    };
-
-  } catch (err) {
-    console.log("release fetch error:", err.message);
-    return null;
-  }
+  return {
+    id,
+    artist: r.artists?.[0]?.name || "Unknown",
+    title: r.title,
+    year: r.year,
+    country: r.country,
+    label: r.labels?.[0]?.name,
+    image: r.images?.[0]?.uri,
+    color: detectColor((r.title || "") + " " + JSON.stringify(r.formats)),
+    basePrice: stats?.median_price || 20
+  };
 }
 
 // ----------------------------
@@ -222,12 +204,9 @@ async function processQueue() {
   if (!queue.length) return;
 
   const job = queue.shift();
-
   const data = await fetchRelease(job.id);
-  if (!data) return;
 
   const multiplier = conditionMultiplier[job.condition] || 1;
-
   let price = data.basePrice * multiplier;
   if (price < 8) price = 8;
 
@@ -238,9 +217,6 @@ async function processQueue() {
   };
 
   history.push(item);
-
-  console.log("📦 Added:", item.title, "$" + item.price);
-
   await createShopifyProduct(item);
 }
 
@@ -253,7 +229,4 @@ app.get("/history", (req, res) => {
   res.json({ history });
 });
 
-// ----------------------------
-app.listen(process.env.PORT || 10000, () => {
-  console.log("🚀 POS RUNNING");
-});
+app.listen(process.env.PORT || 10000);

@@ -1,4 +1,4 @@
-console.log("PRO POS LOADED");
+console.log("POS READY");
 
 window.onload = function(){
   document.getElementById("scanBtn").onclick = scan;
@@ -7,14 +7,7 @@ window.onload = function(){
 };
 
 // ----------------------------
-// HELPERS
-// ----------------------------
-function estimatePrice(){
-  return "$20+"; // placeholder until backend pricing preview
-}
-
-// ----------------------------
-// SCAN (AUTO BEST MATCH)
+// SCAN
 // ----------------------------
 async function scan(){
   const barcode = document.getElementById("barcode").value;
@@ -28,25 +21,19 @@ async function scan(){
   const data = await res.json();
 
   const box = document.getElementById("results");
-  box.innerHTML = "<h4>Select or Tap to Quick Add</h4>";
+  box.innerHTML = "";
 
-  data.results.forEach((r, i) => {
-
+  data.results.forEach(r => {
     const div = document.createElement("div");
     div.className = "card";
 
-    // highlight first (best match)
-    if (i === 0) div.style.border = "2px solid #00e676";
-
     div.innerHTML =
-      "<img src='" + (r.thumb || "") + "' width='60'/>" +
-      "<b>" + r.title + "</b><br/>" +
-      (r.year || "") + " • " + (r.country || "") + "<br/>" +
-      "<small>" + (r.label || "") + "</small><br/>" +
-      "<small>" + (r.format || "") + "</small><br/>" +
-      "<b>" + estimatePrice() + "</b>";
+      "<img src='"+(r.thumb||"")+"' width='60'/>" +
+      "<b>"+r.title+"</b><br/>" +
+      "<b style='color:#00e676'>"+(r.color||"Black")+" Vinyl</b><br/>" +
+      (r.year||"")+" • "+(r.country||"")+"<br/>" +
+      "<small>"+(r.label||"")+"</small>";
 
-    // click = instant add
     div.onclick = () => importItem(r.id);
 
     box.appendChild(div);
@@ -69,18 +56,15 @@ async function importItem(id){
 
   const data = await res.json();
 
-  if (data.duplicates?.length > 0) {
-    alert("⚠️ Duplicate already in inventory");
+  if (data.duplicates.length) {
+    alert("Duplicate skipped");
   }
 }
 
 // ----------------------------
-// BULK (TABLE MODE + ADD ALL)
+// BULK
 // ----------------------------
-let bulkCache = [];
-
 async function bulk(){
-
   const lines = document.getElementById("bulk").value
     .split("\n")
     .filter(Boolean);
@@ -92,114 +76,41 @@ async function bulk(){
   });
 
   const data = await res.json();
-  bulkCache = data.results;
-
   const box = document.getElementById("results");
-  box.innerHTML = "<h4>Bulk Review</h4>";
 
-  data.results.forEach((item,i) => {
+  box.innerHTML = "<h4>Bulk</h4>";
 
+  data.results.forEach((item,i)=>{
     const div = document.createElement("div");
     div.className = "card";
 
-    const img = document.createElement("img");
-    img.src = item.options[0]?.thumb || "";
-    img.width = 60;
+    const select = document.createElement("select");
+    select.id = "r-"+i;
 
-    const selectRelease = document.createElement("select");
-    selectRelease.id = "release-" + i;
-
-    item.options.forEach(opt => {
+    item.options.forEach(opt=>{
       const o = document.createElement("option");
       o.value = opt.id;
       o.textContent =
-        opt.title + " (" +
-        (opt.year || "") + " • " +
-        (opt.country || "") + ")";
-      selectRelease.appendChild(o);
-    });
-
-    selectRelease.onchange = function(){
-      const selected = item.options.find(o => o.id == selectRelease.value);
-      img.src = selected?.thumb || "";
-    };
-
-    const selectCondition = document.createElement("select");
-    selectCondition.id = "cond-" + i;
-
-    ["M","NM","VG+","VG","G"].forEach(c => {
-      const o = document.createElement("option");
-      o.value = c;
-      o.textContent = c;
-      selectCondition.appendChild(o);
+        opt.title+" ("+
+        opt.year+" • "+
+        opt.country+" • "+
+        opt.color+")";
+      select.appendChild(o);
     });
 
     const btn = document.createElement("button");
     btn.textContent = "Add";
 
-    btn.onclick = () => addSingle(i);
+    btn.onclick = async ()=>{
+      const id = select.value;
+      await importItem(id);
+    };
 
-    div.appendChild(img);
-    div.appendChild(selectRelease);
-    div.appendChild(selectCondition);
+    div.appendChild(select);
     div.appendChild(btn);
 
     box.appendChild(div);
   });
-
-  // ADD ALL BUTTON
-  const addAll = document.createElement("button");
-  addAll.textContent = "🚀 Add ALL";
-  addAll.style.marginTop = "20px";
-
-  addAll.onclick = addAllBulk;
-
-  box.appendChild(addAll);
-}
-
-// ----------------------------
-// ADD SINGLE BULK
-// ----------------------------
-async function addSingle(i){
-  const id = document.getElementById("release-"+i).value;
-  const condition = document.getElementById("cond-"+i).value;
-
-  await sendImport([{ id, condition }]);
-}
-
-// ----------------------------
-// ADD ALL BULK
-// ----------------------------
-async function addAllBulk(){
-
-  let items = [];
-
-  bulkCache.forEach((item,i) => {
-    const id = document.getElementById("release-"+i).value;
-    const condition = document.getElementById("cond-"+i).value;
-
-    items.push({ id, condition });
-  });
-
-  await sendImport(items);
-}
-
-// ----------------------------
-// IMPORT WRAPPER
-// ----------------------------
-async function sendImport(items){
-
-  const res = await fetch("/import", {
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ items })
-  });
-
-  const data = await res.json();
-
-  if (data.duplicates?.length > 0) {
-    alert("⚠️ Some duplicates skipped");
-  }
 }
 
 // ----------------------------
@@ -213,7 +124,7 @@ async function startCamera(){
   video.style.display = "block";
 
   stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "environment" }
+    video:{ facingMode:"environment" }
   });
 
   video.srcObject = stream;
@@ -232,24 +143,19 @@ async function scanFrame(){
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
 
-    ctx.drawImage(video, 0, 0);
+    ctx.drawImage(video,0,0);
 
     if ('BarcodeDetector' in window) {
-      const detector = new BarcodeDetector({ formats: ['ean_13','upc_a'] });
+      const detector = new BarcodeDetector({ formats:['ean_13','upc_a'] });
 
-      try {
-        const barcodes = await detector.detect(canvas);
+      const codes = await detector.detect(canvas);
 
-        if (barcodes.length > 0) {
-          const code = barcodes[0].rawValue;
-
-          document.getElementById("barcode").value = code;
-
-          stopCamera();
-          scan();
-          return;
-        }
-      } catch {}
+      if (codes.length){
+        document.getElementById("barcode").value = codes[0].rawValue;
+        stopCamera();
+        scan();
+        return;
+      }
     }
   }
 
@@ -258,11 +164,10 @@ async function scanFrame(){
 
 function stopCamera(){
   const video = document.getElementById("camera");
-
   video.style.display = "none";
 
-  if (stream) {
-    stream.getTracks().forEach(track => track.stop());
+  if (stream){
+    stream.getTracks().forEach(t=>t.stop());
   }
 }
 
@@ -276,15 +181,11 @@ async function load(){
   const log = document.getElementById("log");
   log.innerHTML = "";
 
-  (data.history || []).slice().reverse().forEach(i => {
+  data.history.slice().reverse().forEach(i=>{
     const div = document.createElement("div");
     div.className = "card";
-
     div.textContent =
-      i.artist + " - " +
-      i.title + " $" +
-      i.price;
-
+      i.artist+" - "+i.title+" $"+i.price;
     log.appendChild(div);
   });
 }
