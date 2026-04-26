@@ -5,7 +5,7 @@ app.use(express.json());
 const fetch = global.fetch;
 
 // ----------------------------
-// STATE
+// STATE (PRODUCTION SAFE)
 // ----------------------------
 let queue = [];
 let processing = false;
@@ -24,80 +24,68 @@ const conditionMultiplier = {
 };
 
 // ----------------------------
-// LABEL WEIGHTING (CURATED STORE VALUE)
+// DUPLICATE PROTECTION (SKU BASED)
 // ----------------------------
-const labelWeight = {
-  "XL Recordings": 20,
-  "Sub Pop": 18,
-  "Warp Records": 18,
-  "4AD": 17,
-  "Matador": 16,
-  "Domino": 15,
-  "Island Records": 10,
-  "Sony Music": 5,
-  "Universal": 5,
-  "Warner": 5
-};
+function getSKU(id, condition) {
+  return `${id}-${condition}`;
+}
+
+function alreadyExists(id, condition) {
+  return inventory.has(getSKU(id, condition));
+}
+
+function saveItem(id, condition, item) {
+  inventory.set(getSKU(id, condition), item);
+}
 
 // ----------------------------
-// INTELLIGENCE SCORING ENGINE
+// SHOPIFY (PRODUCTION SAFE)
 // ----------------------------
-function scoreRelease(r, full = false) {
-  let score = 0;
+async function createShopifyProduct(item, sku) {
+  const store = process.env.SHOPIFY_STORE;
+  const token = process.env.SHOPIFY_TOKEN;
 
-  const text = `${r.title || ""} ${r.format || ""} ${r.label?.[0] || ""}`.toLowerCase();
-
-  // ----------------------------
-  // PRESSING QUALITY
-  // ----------------------------
-  if (text.includes("original")) score += 50;
-  if (text.includes("first press")) score += 45;
-  if (text.includes("reissue")) score -= 10;
-  if (text.includes("remaster")) score -= 5;
-
-  // ----------------------------
-  // VINYL VARIANTS (RARITY BOOST)
-  // ----------------------------
-  if (text.includes("clear")) score += 15;
-  if (text.includes("splatter")) score += 20;
-  if (text.includes("marble")) score += 18;
-  if (text.includes("color")) score += 10;
-  if (text.includes("limited")) score += 25;
-  if (text.includes("numbered")) score += 30;
-
-  // ----------------------------
-  // FORMAT QUALITY
-  // ----------------------------
-  if (text.includes("lp")) score += 10;
-  if (text.includes("vinyl")) score += 10;
-  if (text.includes("12\"")) score += 8;
-
-  // ----------------------------
-  // COUNTRY BOOST
-  // ----------------------------
-  if ((r.country || "").includes("US")) score += 5;
-  if ((r.country || "").includes("UK")) score += 5;
-  if ((r.country || "").includes("EU")) score += 3;
-
-  // ----------------------------
-  // LABEL BOOST
-  // ----------------------------
-  const label = r.label?.[0];
-  if (label && labelWeight[label]) {
-    score += labelWeight[label];
+  if (!store || !token) {
+    console.log("❌ Shopify missing env vars");
+    return;
   }
 
-  // ----------------------------
-  // MARKET RARITY (Discogs proxy via format diversity)
-  // ----------------------------
-  if (r.format && r.format.length > 1) score += 5;
+  try {
+    const res = await fetch(`https://${store}/admin/api/2024-01/products.json`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": token
+      },
+      body: JSON.stringify({
+        product: {
+          title: item.title,
+          body_html: `<strong>${item.artist}</strong><br/>Condition: ${item.condition}`,
+          images: item.image ? [{ src: item.image }] : [],
+          variants: [
+            {
+              price: item.price,
+              sku: sku
+            }
+          ]
+        }
+      })
+    });
 
-  // ----------------------------
-  // FULL DETAIL MODE BOOST
-  // ----------------------------
-  if (full) score += 5;
+    const data = await res.json();
 
-  return score;
+    if (!res.ok) {
+      console.log("❌ Shopify error:", data);
+      return false;
+    }
+
+    console.log("✅ Shopify created:", data.product?.id);
+    return true;
+
+  } catch (err) {
+    console.log("❌ Shopify crash:", err.message);
+    return false;
+  }
 }
 
 // ----------------------------
@@ -108,45 +96,15 @@ app.get("/", (req, res) => {
 <!DOCTYPE html>
 <html>
 <head>
-<title>PRO RECORD POS</title>
+<title>PRO POS</title>
 <style>
 body{margin:0;font-family:Arial;background:#0b0b0f;color:#fff}
 .container{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:10px}
 .panel{background:#15151c;padding:10px;border-radius:10px;height:90vh;overflow:auto}
-
-input,textarea,select,button{
-  width:100%;
-  padding:10px;
-  margin-top:6px;
-}
-
-button{background:#00e676;font-weight:bold;border:none;border-radius:6px}
-
-.card{
-  display:flex;
-  gap:10px;
-  background:#222;
-  padding:10px;
-  margin:6px 0;
-  border-radius:8px;
-  cursor:pointer;
-}
-
-.card img{
-  width:60px;
-  height:60px;
-  object-fit:cover;
-  border-radius:4px;
-}
-
-.best{
-  border:2px solid #00e676;
-}
-
-.badge{
-  font-size:11px;
-  color:#00e676;
-}
+input,textarea,select,button{width:100%;padding:10px;margin-top:6px}
+button{background:#00e676;border:none;font-weight:bold;border-radius:6px}
+.card{background:#222;padding:10px;margin:6px 0;border-radius:6px;cursor:pointer}
+.badge{font-size:11px;color:#00e676}
 </style>
 </head>
 <body>
@@ -154,28 +112,21 @@ button{background:#00e676;font-weight:bold;border:none;border-radius:6px}
 <div class="container">
 
 <div class="panel">
-<h3>Scan Barcode</h3>
+<h3>Scan</h3>
 <input id="barcode"/>
-
 <select id="condition">
-  <option>M</option>
-  <option>NM</option>
-  <option>VG+</option>
-  <option>VG</option>
-  <option>G</option>
+<option>M</option><option>NM</option><option>VG+</option><option>VG</option><option>G</option>
 </select>
-
-<button onclick="scan()">SMART SEARCH</button>
-
+<button onclick="scan()">Search</button>
 <div id="results"></div>
 
 <h3>Bulk</h3>
 <textarea id="bulk"></textarea>
-<button onclick="bulk()">IMPORT</button>
+<button onclick="bulk()">Preview Bulk</button>
 </div>
 
 <div class="panel">
-<h3>Live Feed</h3>
+<h3>Live Sync</h3>
 <div id="log"></div>
 </div>
 
@@ -183,6 +134,9 @@ button{background:#00e676;font-weight:bold;border:none;border-radius:6px}
 
 <script>
 
+// ----------------------------
+// SCAN
+// ----------------------------
 async function scan(){
   const barcode = document.getElementById("barcode").value;
 
@@ -195,63 +149,92 @@ async function scan(){
   const data = await res.json();
 
   const box = document.getElementById("results");
-  box.innerHTML = "<h4>Best Pressing Ranked</h4>";
+  box.innerHTML = "<h4>Select Release</h4>";
 
   data.results.forEach(r => {
-
     const div = document.createElement("div");
-    div.className = "card" + (r.best ? " best" : "");
-
-    const img = r.thumb || "https://via.placeholder.com/60";
+    div.className = "card";
 
     div.innerHTML =
-      "<img src='" + img + "'/>" +
-      "<div>" +
-      "<b>" + r.title + "</b> " +
-      (r.best ? "<span class='badge'>BEST MATCH</span>" : "") +
-      "<br/>" +
+      "<b>" + r.title + "</b><br/>" +
       (r.year || "") + " • " +
       (r.country || "") + "<br/>" +
-      "<span class='badge'>" + (r.label || "") + "</span><br/>" +
-      (r.format || "") +
-      "</div>";
+      "<span class='badge'>" + (r.format || "") + "</span>";
 
-    div.onclick = () => importRelease(r.id);
+    div.onclick = () => importItem(r.id);
 
     box.appendChild(div);
   });
 }
 
-async function importRelease(id){
+// ----------------------------
+// IMPORT SINGLE
+// ----------------------------
+async function importItem(id){
   const condition = document.getElementById("condition").value;
 
-  await fetch("/bulk-import",{
+  await fetch("/import",{
     method:"POST",
     headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({
-      items:[{ barcode:id, condition }]
+      items:[{ id, condition }]
     })
   });
 }
 
+// ----------------------------
+// BULK PREVIEW
+// ----------------------------
 async function bulk(){
   const lines = document.getElementById("bulk").value.split("\\n").filter(Boolean);
 
-  const items = lines.map(l => {
-    const p = l.split(" ");
-    return {
-      barcode: p[0],
-      condition: p[1] || "VG+"
-    };
-  });
-
-  await fetch("/bulk-import",{
+  const res = await fetch("/bulk-preview",{
     method:"POST",
     headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ items })
+    body: JSON.stringify({ items: lines })
+  });
+
+  const data = await res.json();
+
+  const box = document.getElementById("results");
+  box.innerHTML = "<h4>Bulk Preview</h4>";
+
+  data.results.forEach((r,i) => {
+
+    const div = document.createElement("div");
+    div.className = "card";
+
+    div.innerHTML =
+      "<b>" + (r.title || "Unknown") + "</b><br/>" +
+      (r.year || "") + " • " +
+      (r.country || "") + "<br/>" +
+      "<select id='c"+i+"'>" +
+        "<option>VG+</option><option>VG</option><option>NM</option><option>M</option>" +
+      "</select>" +
+      "<button onclick=\"confirmBulk('" + r.id + "'," + i + ")\">Queue</button>";
+
+    box.appendChild(div);
   });
 }
 
+// ----------------------------
+// CONFIRM BULK
+// ----------------------------
+async function confirmBulk(id,i){
+  const condition = document.getElementById("c"+i).value;
+
+  await fetch("/import",{
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({
+      items:[{ id, condition }]
+    })
+  });
+}
+
+// ----------------------------
+// LIVE FEED
+// ----------------------------
 async function load(){
   const res = await fetch("/history");
   const data = await res.json();
@@ -264,11 +247,9 @@ async function load(){
     div.className = "card";
 
     div.innerHTML =
-      "<div>" +
       "<b>" + i.artist + "</b><br/>" +
       i.title + "<br/>" +
-      "$" + i.price + " • " + i.condition +
-      "</div>";
+      "$" + i.price + " • " + i.condition;
 
     log.appendChild(div);
   });
@@ -285,7 +266,7 @@ load();
 });
 
 // ----------------------------
-// SEARCH ENGINE
+// SEARCH
 // ----------------------------
 app.post("/search", async (req, res) => {
   const { barcode } = req.body;
@@ -295,20 +276,42 @@ app.post("/search", async (req, res) => {
       `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
     ).then(r => r.json());
 
-    let results = (data.results || []).slice(0, 10).map(r => ({
+    const results = (data.results || []).slice(0, 10).map(r => ({
       id: r.id,
       title: r.title,
       year: r.year,
       country: r.country,
-      label: r.label?.[0],
-      format: Array.isArray(r.format) ? r.format.join(", ") : r.format,
-      thumb: r.thumb,
-      score: scoreRelease(r)
+      format: Array.isArray(r.format) ? r.format.join(", ") : r.format
     }));
 
-    results.sort((a,b) => b.score - a.score);
+    res.json({ results });
 
-    if (results.length) results[0].best = true;
+  } catch {
+    res.json({ results: [] });
+  }
+});
+
+// ----------------------------
+// BULK PREVIEW
+// ----------------------------
+app.post("/bulk-preview", async (req, res) => {
+  const { items } = req.body;
+
+  try {
+    const results = await Promise.all(items.map(async (barcode) => {
+      const data = await fetch(
+        `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
+      ).then(r => r.json());
+
+      const r = (data.results || [])[0];
+
+      return {
+        id: r?.id,
+        title: r?.title,
+        year: r?.year,
+        country: r?.country
+      };
+    }));
 
     res.json({ results });
 
@@ -329,18 +332,29 @@ async function fetchRelease(id){
     `https://api.discogs.com/marketplace/stats/${id}?token=${process.env.DISCOGS_TOKEN}`
   ).then(x => x.json()).catch(() => null);
 
-  const median = stats?.median_price || 20;
-
   return {
     artist: r.artists?.[0]?.name || "Unknown Artist",
     title: r.title || "Unknown Title",
     image: r.images?.[0]?.uri || "",
-    basePrice: median
+    basePrice: stats?.median_price || 20
   };
 }
 
 // ----------------------------
-// QUEUE
+// IMPORT PIPELINE (PRODUCTION SAFE)
+// ----------------------------
+app.post("/import", async (req, res) => {
+  const items = req.body.items || [];
+
+  for (let job of items) {
+    queue.push(job);
+  }
+
+  res.json({ success: true, queued: items.length });
+});
+
+// ----------------------------
+// QUEUE PROCESSOR
 // ----------------------------
 async function processQueue(){
   if (processing) return;
@@ -349,19 +363,26 @@ async function processQueue(){
   while(queue.length){
     const job = queue.shift();
 
-    const data = await fetchRelease(job.barcode);
+    if (alreadyExists(job.id, job.condition)) continue;
+
+    const data = await fetchRelease(job.id);
     if (!data) continue;
 
-    const multiplier = conditionMultiplier[job.condition || "VG+"] || 1;
+    const price = (data.basePrice * (conditionMultiplier[job.condition] || 1)).toFixed(2);
 
-    let price = data.basePrice * multiplier;
-    if (price < 8) price = 8;
-
-    history.push({
+    const item = {
       ...data,
       condition: job.condition,
-      price: price.toFixed(2)
-    });
+      price
+    };
+
+    const sku = getSKU(job.id, job.condition);
+
+    saveItem(job.id, job.condition, item);
+
+    history.push(item);
+
+    await createShopifyProduct(item, sku);
   }
 
   processing = false;
@@ -372,16 +393,10 @@ setInterval(processQueue,1000);
 // ----------------------------
 // API
 // ----------------------------
-app.post("/bulk-import",(req,res)=>{
-  const items = req.body.items || [];
-  items.forEach(i => queue.push(i));
-  res.json({ success:true, queued:items.length });
-});
-
 app.get("/history",(req,res)=>{
   res.json({ history });
 });
 
 app.listen(process.env.PORT || 10000, () => {
-  console.log("PRO INTELLIGENT POS RUNNING");
+  console.log("PRODUCTION POS RUNNING");
 });
