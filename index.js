@@ -13,7 +13,7 @@ let history = [];
 let inventory = new Map();
 
 // ----------------------------
-// PRICING (FIXED + CLEAN)
+// CONDITION PRICING
 // ----------------------------
 const conditionMultiplier = {
   "M": 1.5,
@@ -24,46 +24,37 @@ const conditionMultiplier = {
 };
 
 // ----------------------------
-// INVENTORY (Inventory C mode)
-// ----------------------------
-function handleInventory(barcode, item, condition) {
-  const existing = inventory.get(barcode);
-
-  if (!existing) {
-    inventory.set(barcode, {
-      ...item,
-      condition,
-      status: "ACTIVE"
-    });
-    return "NEW";
-  }
-
-  inventory.set(barcode, {
-    ...existing,
-    ...item,
-    condition,
-    status: "UPDATED"
-  });
-
-  return "UPDATED";
-}
-
-// ----------------------------
 // HISTORY
 // ----------------------------
-function addHistory(barcode, item) {
+function addHistory(barcode, item, note = "") {
   history.push({
     barcode,
     artist: item.artist,
     title: item.title,
     price: item.price,
     condition: item.condition,
-    image: item.image
+    image: item.image,
+    note
   });
 
   if (history.length > 200) {
     history = history.slice(-200);
   }
+}
+
+// ----------------------------
+// INVENTORY (STRICT DUPLICATE PROTECTION)
+// ----------------------------
+function checkDuplicate(barcode) {
+  return inventory.has(barcode);
+}
+
+function saveInventory(barcode, item, condition) {
+  inventory.set(barcode, {
+    ...item,
+    condition,
+    status: "ACTIVE"
+  });
 }
 
 // ----------------------------
@@ -110,18 +101,14 @@ button{
   border-radius:6px;
 }
 
-.item img{
-  width:60px;
-  border-radius:4px;
-}
-
+.item img{width:60px;border-radius:4px}
 .small{font-size:12px;color:#aaa}
 </style>
 </head>
 <body>
 
 <div class="top">
-  <div>🎧 RETAIL POS SYSTEM</div>
+  <div>🎧 RETAIL POS</div>
   <div>LIVE</div>
 </div>
 
@@ -142,13 +129,13 @@ button{
 
 <button onclick="scan()">SCAN</button>
 
-<h3>Bulk Import</h3>
+<h3>Bulk</h3>
 <textarea id="bulk" rows="6"></textarea>
 
-<button onclick="previewBulk()">PREVIEW</button>
-<button onclick="confirmBulk()">IMPORT</button>
+<button onclick="preview()">PREVIEW</button>
+<button onclick="bulk()">IMPORT</button>
 
-<div id="preview"></div>
+<div id="previewBox"></div>
 
 </div>
 
@@ -163,14 +150,11 @@ button{
 
 let previewData = [];
 
-// ----------------------------
-// SCAN
-// ----------------------------
 async function scan(){
   const barcode = document.getElementById("barcode").value;
   const condition = document.getElementById("condition").value;
 
-  await fetch("/bulk-import",{
+  await fetch("/bulk-import", {
     method:"POST",
     headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({ items:[{ barcode, condition }] })
@@ -180,21 +164,20 @@ async function scan(){
 // ----------------------------
 // BULK PREVIEW
 // ----------------------------
-function previewBulk(){
+function preview(){
   const lines = document.getElementById("bulk")
     .value.split("\\n")
     .filter(Boolean);
 
   previewData = lines.map(line => {
     const parts = line.trim().split(" ");
-
     return {
       barcode: parts[0],
       condition: parts[1] || "VG+"
     };
   });
 
-  const box = document.getElementById("preview");
+  const box = document.getElementById("previewBox");
   box.innerHTML = "<h4>Preview ("+previewData.length+")</h4>";
 
   previewData.forEach(i => {
@@ -205,20 +188,15 @@ function previewBulk(){
   });
 }
 
-// ----------------------------
-// BULK CONFIRM
-// ----------------------------
-async function confirmBulk(){
-  if (!previewData.length) return;
-
-  await fetch("/bulk-import",{
+async function bulk(){
+  await fetch("/bulk-import", {
     method:"POST",
     headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({ items: previewData })
   });
 
   previewData = [];
-  document.getElementById("preview").innerHTML = "";
+  document.getElementById("previewBox").innerHTML = "";
 }
 
 // ----------------------------
@@ -241,6 +219,7 @@ async function load(){
       "<b>"+i.artist+"</b><br/>" +
       i.title+"<br/>" +
       "$"+i.price+" • "+i.condition +
+      (i.note ? "<br/><span class='small'>"+i.note+"</span>" : "") +
       "</div>";
 
     log.appendChild(div);
@@ -258,7 +237,7 @@ load();
 });
 
 // ----------------------------
-// DISCOGS FETCH
+// DISCOGS
 // ----------------------------
 async function fetchDiscogs(barcode){
   try {
@@ -321,7 +300,7 @@ async function createShopifyProduct(item){
 }
 
 // ----------------------------
-// QUEUE PROCESSOR
+// QUEUE (WITH DUPLICATE BLOCKING)
 // ----------------------------
 async function processQueue(){
   if (processing) return;
@@ -330,21 +309,35 @@ async function processQueue(){
   while(queue.length){
     const job = queue.shift();
 
+    // DUPLICATE CHECK
+    if (checkDuplicate(job.barcode)) {
+      addHistory(job.barcode, {
+        artist: "DUPLICATE",
+        title: "Already in inventory",
+        price: "0",
+        condition: job.condition,
+        image: ""
+      }, "SKIPPED DUPLICATE");
+
+      continue;
+    }
+
     const data = await fetchDiscogs(job.barcode);
     if (!data) continue;
 
-    const multiplier = conditionMultiplier[job.condition || "VG+"] || 1;
+    const condition = job.condition || "VG+";
+    const multiplier = conditionMultiplier[condition] || 1;
 
     let price = data.basePrice * multiplier;
     if (price < 8) price = 8;
 
     const item = {
       ...data,
-      condition: job.condition || "VG+",
+      condition,
       price: price.toFixed(2)
     };
 
-    handleInventory(job.barcode, item, item.condition);
+    saveInventory(job.barcode, item, condition);
     await createShopifyProduct(item);
     addHistory(job.barcode, item);
   }
@@ -367,7 +360,6 @@ app.get("/history",(req,res)=>{
   res.json({ history });
 });
 
-// ----------------------------
 app.listen(process.env.PORT || 10000, () => {
-  console.log("RETAIL POS CLEAN RUNNING");
+  console.log("RETAIL SAFE MODE RUNNING");
 });
