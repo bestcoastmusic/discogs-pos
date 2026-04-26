@@ -5,7 +5,7 @@ app.use(express.json());
 const fetch = global.fetch;
 
 // ----------------------------
-// STATE (PRODUCTION SAFE)
+// STATE
 // ----------------------------
 let queue = [];
 let processing = false;
@@ -24,29 +24,14 @@ const conditionMultiplier = {
 };
 
 // ----------------------------
-// DUPLICATE PROTECTION (SKU BASED)
+// SHOPIFY
 // ----------------------------
-function getSKU(id, condition) {
-  return `${id}-${condition}`;
-}
-
-function alreadyExists(id, condition) {
-  return inventory.has(getSKU(id, condition));
-}
-
-function saveItem(id, condition, item) {
-  inventory.set(getSKU(id, condition), item);
-}
-
-// ----------------------------
-// SHOPIFY (PRODUCTION SAFE)
-// ----------------------------
-async function createShopifyProduct(item, sku) {
+async function createShopifyProduct(item) {
   const store = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_TOKEN;
 
   if (!store || !token) {
-    console.log("❌ Shopify missing env vars");
+    console.log("❌ Missing Shopify env");
     return;
   }
 
@@ -60,14 +45,9 @@ async function createShopifyProduct(item, sku) {
       body: JSON.stringify({
         product: {
           title: item.title,
-          body_html: `<strong>${item.artist}</strong><br/>Condition: ${item.condition}`,
+          body_html: `<strong>${item.artist}</strong>`,
           images: item.image ? [{ src: item.image }] : [],
-          variants: [
-            {
-              price: item.price,
-              sku: sku
-            }
-          ]
+          variants: [{ price: item.price }]
         }
       })
     });
@@ -76,15 +56,12 @@ async function createShopifyProduct(item, sku) {
 
     if (!res.ok) {
       console.log("❌ Shopify error:", data);
-      return false;
+    } else {
+      console.log("✅ Shopify created:", data.product?.id);
     }
-
-    console.log("✅ Shopify created:", data.product?.id);
-    return true;
 
   } catch (err) {
     console.log("❌ Shopify crash:", err.message);
-    return false;
   }
 }
 
@@ -96,15 +73,15 @@ app.get("/", (req, res) => {
 <!DOCTYPE html>
 <html>
 <head>
-<title>PRO POS</title>
+<title>POS</title>
 <style>
 body{margin:0;font-family:Arial;background:#0b0b0f;color:#fff}
 .container{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:10px}
 .panel{background:#15151c;padding:10px;border-radius:10px;height:90vh;overflow:auto}
 input,textarea,select,button{width:100%;padding:10px;margin-top:6px}
 button{background:#00e676;border:none;font-weight:bold;border-radius:6px}
-.card{background:#222;padding:10px;margin:6px 0;border-radius:6px;cursor:pointer}
-.badge{font-size:11px;color:#00e676}
+.card{background:#222;padding:10px;margin:6px 0;border-radius:6px}
+.small{font-size:12px;color:#aaa}
 </style>
 </head>
 <body>
@@ -115,18 +92,24 @@ button{background:#00e676;border:none;font-weight:bold;border-radius:6px}
 <h3>Scan</h3>
 <input id="barcode"/>
 <select id="condition">
-<option>M</option><option>NM</option><option>VG+</option><option>VG</option><option>G</option>
+  <option>M</option>
+  <option>NM</option>
+  <option>VG+</option>
+  <option>VG</option>
+  <option>G</option>
 </select>
-<button onclick="scan()">Search</button>
+
+<button id="scanBtn">Search</button>
+
 <div id="results"></div>
 
 <h3>Bulk</h3>
 <textarea id="bulk"></textarea>
-<button onclick="bulk()">Preview Bulk</button>
+<button id="bulkBtn">Preview Bulk</button>
 </div>
 
 <div class="panel">
-<h3>Live Sync</h3>
+<h3>Live Feed</h3>
 <div id="log"></div>
 </div>
 
@@ -135,8 +118,10 @@ button{background:#00e676;border:none;font-weight:bold;border-radius:6px}
 <script>
 
 // ----------------------------
-// SCAN
+// SCAN (SAFE BINDING)
 // ----------------------------
+document.getElementById("scanBtn").addEventListener("click", scan);
+
 async function scan(){
   const barcode = document.getElementById("barcode").value;
 
@@ -155,20 +140,18 @@ async function scan(){
     const div = document.createElement("div");
     div.className = "card";
 
-    div.innerHTML =
-      "<b>" + r.title + "</b><br/>" +
-      (r.year || "") + " • " +
-      (r.country || "") + "<br/>" +
-      "<span class='badge'>" + (r.format || "") + "</span>";
+    div.textContent = r.title + " (" + (r.year || "") + ")";
 
-    div.onclick = () => importItem(r.id);
+    div.addEventListener("click", () => {
+      importItem(r.id);
+    });
 
     box.appendChild(div);
   });
 }
 
 // ----------------------------
-// IMPORT SINGLE
+// IMPORT
 // ----------------------------
 async function importItem(id){
   const condition = document.getElementById("condition").value;
@@ -183,10 +166,14 @@ async function importItem(id){
 }
 
 // ----------------------------
-// BULK PREVIEW
+// BULK PREVIEW (SAFE)
 // ----------------------------
+document.getElementById("bulkBtn").addEventListener("click", bulk);
+
 async function bulk(){
-  const lines = document.getElementById("bulk").value.split("\\n").filter(Boolean);
+  const lines = document.getElementById("bulk").value
+    .split("\n")
+    .filter(Boolean);
 
   const res = await fetch("/bulk-preview",{
     method:"POST",
@@ -204,24 +191,39 @@ async function bulk(){
     const div = document.createElement("div");
     div.className = "card";
 
-    div.innerHTML =
-      "<b>" + (r.title || "Unknown") + "</b><br/>" +
-      (r.year || "") + " • " +
-      (r.country || "") + "<br/>" +
-      "<select id='c"+i+"'>" +
-        "<option>VG+</option><option>VG</option><option>NM</option><option>M</option>" +
-      "</select>" +
-      "<button onclick=\"confirmBulk('" + r.id + "'," + i + ")\">Queue</button>";
+    const title = document.createElement("div");
+    title.textContent = (r.title || "Unknown") + " " + (r.year || "");
+
+    const select = document.createElement("select");
+    select.id = "cond-" + i;
+
+    ["VG+","VG","NM","M"].forEach(c => {
+      const opt = document.createElement("option");
+      opt.value = c;
+      opt.textContent = c;
+      select.appendChild(opt);
+    });
+
+    const btn = document.createElement("button");
+    btn.textContent = "Queue";
+
+    btn.addEventListener("click", () => {
+      confirmBulk(r.id, i);
+    });
+
+    div.appendChild(title);
+    div.appendChild(select);
+    div.appendChild(btn);
 
     box.appendChild(div);
   });
 }
 
 // ----------------------------
-// CONFIRM BULK
+// BULK CONFIRM
 // ----------------------------
 async function confirmBulk(id,i){
-  const condition = document.getElementById("c"+i).value;
+  const condition = document.getElementById("cond-" + i).value;
 
   await fetch("/import",{
     method:"POST",
@@ -246,10 +248,10 @@ async function load(){
     const div = document.createElement("div");
     div.className = "card";
 
-    div.innerHTML =
-      "<b>" + i.artist + "</b><br/>" +
-      i.title + "<br/>" +
-      "$" + i.price + " • " + i.condition;
+    div.textContent =
+      i.artist + " - " +
+      i.title + " $" +
+      i.price;
 
     log.appendChild(div);
   });
@@ -279,9 +281,7 @@ app.post("/search", async (req, res) => {
     const results = (data.results || []).slice(0, 10).map(r => ({
       id: r.id,
       title: r.title,
-      year: r.year,
-      country: r.country,
-      format: Array.isArray(r.format) ? r.format.join(", ") : r.format
+      year: r.year
     }));
 
     res.json({ results });
@@ -308,8 +308,7 @@ app.post("/bulk-preview", async (req, res) => {
       return {
         id: r?.id,
         title: r?.title,
-        year: r?.year,
-        country: r?.country
+        year: r?.year
       };
     }));
 
@@ -321,7 +320,7 @@ app.post("/bulk-preview", async (req, res) => {
 });
 
 // ----------------------------
-// RELEASE FETCH
+// RELEASE
 // ----------------------------
 async function fetchRelease(id){
   const r = await fetch(
@@ -333,29 +332,22 @@ async function fetchRelease(id){
   ).then(x => x.json()).catch(() => null);
 
   return {
-    artist: r.artists?.[0]?.name || "Unknown Artist",
-    title: r.title || "Unknown Title",
+    artist: r.artists?.[0]?.name || "Unknown",
+    title: r.title || "Unknown",
     image: r.images?.[0]?.uri || "",
     basePrice: stats?.median_price || 20
   };
 }
 
 // ----------------------------
-// IMPORT PIPELINE (PRODUCTION SAFE)
+// QUEUE
 // ----------------------------
-app.post("/import", async (req, res) => {
+app.post("/import",(req,res)=>{
   const items = req.body.items || [];
-
-  for (let job of items) {
-    queue.push(job);
-  }
-
-  res.json({ success: true, queued: items.length });
+  items.forEach(i => queue.push(i));
+  res.json({ success:true });
 });
 
-// ----------------------------
-// QUEUE PROCESSOR
-// ----------------------------
 async function processQueue(){
   if (processing) return;
   processing = true;
@@ -363,10 +355,7 @@ async function processQueue(){
   while(queue.length){
     const job = queue.shift();
 
-    if (alreadyExists(job.id, job.condition)) continue;
-
     const data = await fetchRelease(job.id);
-    if (!data) continue;
 
     const price = (data.basePrice * (conditionMultiplier[job.condition] || 1)).toFixed(2);
 
@@ -376,13 +365,9 @@ async function processQueue(){
       price
     };
 
-    const sku = getSKU(job.id, job.condition);
-
-    saveItem(job.id, job.condition, item);
-
     history.push(item);
 
-    await createShopifyProduct(item, sku);
+    await createShopifyProduct(item);
   }
 
   processing = false;
@@ -390,13 +375,10 @@ async function processQueue(){
 
 setInterval(processQueue,1000);
 
-// ----------------------------
-// API
-// ----------------------------
 app.get("/history",(req,res)=>{
   res.json({ history });
 });
 
 app.listen(process.env.PORT || 10000, () => {
-  console.log("PRODUCTION POS RUNNING");
+  console.log("PRO POS SAFE RUNNING");
 });
