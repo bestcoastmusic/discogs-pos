@@ -4,16 +4,10 @@ app.use(express.json());
 
 const fetch = global.fetch;
 
-// =========================
-// STATE
-// =========================
 let queue = [];
 let processing = false;
 let history = [];
 
-// =========================
-// HISTORY
-// =========================
 function addHistory(barcode, item) {
   history.push({
     barcode,
@@ -21,78 +15,88 @@ function addHistory(barcode, item) {
     title: item?.title || "Unknown Title"
   });
 
-  if (history.length > 100) {
-    history = history.slice(-100);
-  }
+  if (history.length > 100) history = history.slice(-100);
 }
 
-// =========================
-// UI (NO TEMPLATE STRINGS = BULLETPROOF)
-// =========================
 app.get("/", (req, res) => {
-  const html =
-    "<!DOCTYPE html>" +
-    "<html>" +
-    "<head>" +
-    "<title>POS</title>" +
-    "<style>" +
-    "body{font-family:Arial;background:#111;color:#fff;text-align:center;padding:20px}" +
-    "input,textarea{padding:10px;width:260px;margin:5px}" +
-    "button{padding:10px;margin:5px}" +
-    "#log{text-align:left;max-width:600px;margin:auto}" +
-    ".item{background:#222;margin:5px;padding:8px}" +
-    "</style>" +
-    "</head>" +
-    "<body>" +
-    "<h1>POS SYSTEM</h1>" +
+  const html = "<!DOCTYPE html><html><head><title>POS</title><style>" +
+  "body{margin:0;font-family:Arial;background:#0b0b0f;color:#fff}" +
+  ".top{padding:12px;background:#111;border-bottom:1px solid #222;display:flex;justify-content:space-between}" +
+  ".container{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:10px}" +
+  ".panel{background:#15151c;border-radius:10px;padding:10px;height:80vh;overflow:auto}" +
+  "input,textarea{width:100%;padding:10px;margin-top:6px;background:#222;border:none;color:#fff;border-radius:6px}" +
+  "button{width:100%;padding:10px;margin-top:8px;background:#00e676;border:none;border-radius:6px;font-weight:bold}" +
+  ".item{background:#222;margin:6px 0;padding:10px;border-radius:6px}" +
+  "video{width:100%;display:none;margin-top:10px;border-radius:10px}" +
+  ".ding{position:fixed;bottom:20px;right:20px;background:#00e676;color:#000;padding:10px;border-radius:20px;display:none}" +
+  "</style></head><body>" +
 
-    "<input id='barcode' placeholder='barcode'/>" +
-    "<button onclick='scan()'>Scan</button><br/>" +
+  "<div class='top'><div>🎧 BEST COAST POS</div><div>LIVE</div></div>" +
 
-    "<textarea id='bulk' rows='4'></textarea><br/>" +
-    "<button onclick='bulk()'>Bulk</button><br/>" +
+  "<div class='container'>" +
 
-    "<button onclick='load()'>Refresh</button>" +
+  "<div class='panel'>" +
+  "<h3>Scan</h3>" +
+  "<input id='barcode' placeholder='barcode'/>" +
+  "<button onclick='scan()'>SCAN</button>" +
 
-    "<div id='log'></div>" +
+  "<h3>Bulk</h3>" +
+  "<textarea id='bulk' rows='6'></textarea>" +
+  "<button onclick='bulk()'>BULK</button>" +
 
-    "<script>" +
+  "<h3>Camera</h3>" +
+  "<button onclick='camera()'>OPEN CAMERA</button>" +
+  "<video id='video' autoplay></video>" +
+  "</div>" +
 
-    "async function scan(){" +
-    "let b=document.getElementById('barcode').value;" +
-    "await fetch('/bulk-import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:[{barcode:b}]})});" +
-    "}" +
+  "<div class='panel'>" +
+  "<h3>Live Feed</h3>" +
+  "<div id='log'></div>" +
+  "</div>" +
 
-    "async function bulk(){" +
-    "let items=document.getElementById('bulk').value.split('\\n').filter(Boolean).map(b=>({barcode:b}));" +
-    "await fetch('/bulk-import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items})});" +
-    "}" +
+  "</div>" +
 
-    "async function load(){" +
-    "let res=await fetch('/history');" +
-    "let data=await res.json();" +
-    "let log=document.getElementById('log');" +
-    "log.innerHTML='';" +
-    "data.history.forEach(i=>{" +
-    "let d=document.createElement('div');" +
-    "d.className='item';" +
-    "d.innerText=i.artist+' - '+i.title+' ('+i.barcode+')';" +
-    "log.appendChild(d);" +
-    "});" +
-    "}" +
+  "<div class='ding' id='ding'>✔ Imported</div>" +
 
-    "setInterval(load,2000);" +
-    "load();" +
+  "<script>" +
 
-    "</script>" +
-    "</body></html>";
+  "function ding(){let d=document.getElementById('ding');d.style.display='block';setTimeout(()=>d.style.display='none',800)}" +
+
+  "async function scan(){" +
+  "let b=document.getElementById('barcode').value;" +
+  "await fetch('/bulk-import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:[{barcode:b}]})});" +
+  "ding();" +
+  "}" +
+
+  "async function bulk(){" +
+  "let items=document.getElementById('bulk').value.split('\\n').filter(Boolean).map(b=>({barcode:b}));" +
+  "await fetch('/bulk-import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items})});" +
+  "ding();" +
+  "}" +
+
+  "async function camera(){" +
+  "const stream=await navigator.mediaDevices.getUserMedia({video:true});" +
+  "let v=document.getElementById('video');v.style.display='block';v.srcObject=stream;" +
+  "}" +
+
+  "async function load(){" +
+  "let res=await fetch('/history');" +
+  "let data=await res.json();" +
+  "let log=document.getElementById('log');log.innerHTML='';" +
+  "(data.history||[]).slice().reverse().forEach(i=>{" +
+  "let d=document.createElement('div');d.className='item';" +
+  "d.innerText='📦 '+i.artist+' - '+i.title+' ('+i.barcode+')';" +
+  "log.appendChild(d);" +
+  "});" +
+  "}" +
+
+  "setInterval(load,2000);load();" +
+
+  "</script></body></html>";
 
   res.send(html);
 });
 
-// =========================
-// DISCOGS
-// =========================
 async function fetchDiscogs(barcode){
   try {
     const search = await fetch(
@@ -122,9 +126,6 @@ async function fetchDiscogs(barcode){
   }
 }
 
-// =========================
-// SHOPIFY
-// =========================
 async function createShopifyProduct(item){
   const store = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_TOKEN;
@@ -139,16 +140,13 @@ async function createShopifyProduct(item){
     },
     body: JSON.stringify({
       product:{
-        title: item.title,
+        title:item.title,
         variants:[{ price:"20.00" }]
       }
     })
   });
 }
 
-// =========================
-// QUEUE
-// =========================
 async function processQueue(){
   if (processing) return;
   processing = true;
@@ -167,23 +165,17 @@ async function processQueue(){
   processing = false;
 }
 
-setInterval(processQueue, 1000);
+setInterval(processQueue,1000);
 
-// =========================
-// API
-// =========================
-app.post("/bulk-import", (req,res)=>{
-  req.body.items.forEach(i => queue.push(i));
-  res.json({ success:true, queued:req.body.items.length });
+app.post("/bulk-import",(req,res)=>{
+  req.body.items.forEach(i=>queue.push(i));
+  res.json({success:true,queued:req.body.items.length});
 });
 
-app.get("/history", (req,res)=>{
-  res.json({ history });
+app.get("/history",(req,res)=>{
+  res.json({history});
 });
 
-// =========================
-// START
-// =========================
-app.listen(process.env.PORT || 10000, () => {
+app.listen(process.env.PORT||10000,()=>{
   console.log("POS RUNNING");
 });
