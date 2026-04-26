@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>POS</title>
+<style>
+body{margin:0;font-family:Arial;background:#0b0b0f;color:#fff}
+.container{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:10px}
+.panel{background:#15151c;padding:10px;border-radius:10px;height:90vh;overflow:auto}
+input,textarea,select,button{width:100%;padding:10px;margin-top:6px}
+button{background:#00e676;border:none;font-weight:bold;border-radius:6px}
+.card{background:#222;padding:10px;margin:6px 0;border-radius:6px;cursor:pointer}
+</style>
+</head>
+<body>
+
+<div class="container">
+
+<div class="panel">
+<h3>Scan</h3>
+
+<input id="barcode" placeholder="barcode"/>
+
+<select id="condition">
+<option>M</option>
+<option>NM</option>
+<option>VG+</option>
+<option>VG</option>
+<option>G</option>
+</select>
+
+<button id="scanBtn">Search</button>
+
+<div id="results"></div>
+
+<h3>Bulk</h3>
+<textarea id="bulk"></textarea>
+<button id="bulkBtn">Preview Bulk</button>
+
+</div>
+
+<div class="panel">
+<h3>Live Feed</h3>
+<div id="log"></div>
+</div>
+
+</div>
+
+<script src="app.js"></script>
+
+</body>
+</html>
