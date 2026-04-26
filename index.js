@@ -5,7 +5,7 @@ app.use(express.json());
 app.use(express.static("public"));
 
 // ----------------------------
-// HELPER: COLOR FROM FORMATS
+// COLOR DETECTION (REAL)
 // ----------------------------
 function detectColorFromFormats(formats = []) {
   const text = JSON.stringify(formats).toLowerCase();
@@ -48,7 +48,38 @@ const conditionMultiplier = {
 };
 
 // ----------------------------
-// SEARCH (FAST, NO COLOR)
+// FETCH RELEASE FULL DATA
+// ----------------------------
+async function fetchRelease(id) {
+  try {
+    const r = await fetch(
+      `https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`
+    ).then(x => x.json());
+
+    const stats = await fetch(
+      `https://api.discogs.com/marketplace/stats/${id}?token=${process.env.DISCOGS_TOKEN}`
+    ).then(x => x.json()).catch(() => null);
+
+    return {
+      id,
+      artist: r.artists?.[0]?.name || "Unknown",
+      title: r.title,
+      year: r.year,
+      country: r.country,
+      label: r.labels?.[0]?.name,
+      image: r.images?.[0]?.uri,
+      color: detectColorFromFormats(r.formats || []),
+      basePrice: stats?.median_price || 20
+    };
+
+  } catch (err) {
+    console.log("release error:", err.message);
+    return null;
+  }
+}
+
+// ----------------------------
+// SEARCH (NOW ACCURATE)
 // ----------------------------
 app.post("/search", async (req, res) => {
   const { barcode } = req.body;
@@ -58,51 +89,75 @@ app.post("/search", async (req, res) => {
       `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
     ).then(r => r.json());
 
-    const results = (data.results || []).slice(0, 10).map(r => ({
-      id: r.id,
-      title: r.title,
-      year: r.year,
-      country: r.country,
-      format: Array.isArray(r.format) ? r.format.join(", ") : r.format,
-      label: r.label?.[0],
-      thumb: r.thumb,
-      color: "Unknown" // correct: we resolve later
-    }));
+    const top = (data.results || []).slice(0, 5);
 
-    res.json({ results });
+    // 🔥 fetch full release data for each result
+    const results = await Promise.all(
+      top.map(async (r) => {
+        const full = await fetchRelease(r.id);
+        if (!full) return null;
 
-  } catch {
+        return {
+          id: full.id,
+          title: full.title,
+          year: full.year,
+          country: full.country,
+          label: full.label,
+          thumb: full.image,
+          color: full.color
+        };
+      })
+    );
+
+    res.json({ results: results.filter(Boolean) });
+
+  } catch (err) {
+    console.log("search error:", err.message);
     res.json({ results: [] });
   }
 });
 
 // ----------------------------
-// BULK PREVIEW
+// BULK PREVIEW (ACCURATE)
 // ----------------------------
 app.post("/bulk-preview", async (req, res) => {
   const { items } = req.body;
 
   try {
     const results = await Promise.all(items.map(async (barcode) => {
+
       const data = await fetch(
         `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
       ).then(r => r.json());
 
-      const options = (data.results || []).slice(0, 5).map(r => ({
-        id: r.id,
-        title: r.title,
-        year: r.year,
-        country: r.country,
-        thumb: r.thumb,
-        color: "Unknown"
-      }));
+      const top = (data.results || []).slice(0, 5);
 
-      return { barcode, options };
+      const options = await Promise.all(
+        top.map(async (r) => {
+          const full = await fetchRelease(r.id);
+          if (!full) return null;
+
+          return {
+            id: full.id,
+            title: full.title,
+            year: full.year,
+            country: full.country,
+            thumb: full.image,
+            color: full.color
+          };
+        })
+      );
+
+      return {
+        barcode,
+        options: options.filter(Boolean)
+      };
     }));
 
     res.json({ results });
 
-  } catch {
+  } catch (err) {
+    console.log("bulk error:", err.message);
     res.json({ results: [] });
   }
 });
@@ -130,37 +185,6 @@ app.post("/import", (req, res) => {
 });
 
 // ----------------------------
-// FETCH RELEASE (REAL DATA)
-// ----------------------------
-async function fetchRelease(id) {
-  try {
-    const r = await fetch(
-      `https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`
-    ).then(x => x.json());
-
-    const stats = await fetch(
-      `https://api.discogs.com/marketplace/stats/${id}?token=${process.env.DISCOGS_TOKEN}`
-    ).then(x => x.json()).catch(() => null);
-
-    return {
-      id,
-      artist: r.artists?.[0]?.name || "Unknown",
-      title: r.title,
-      year: r.year,
-      country: r.country,
-      label: r.labels?.[0]?.name,
-      image: r.images?.[0]?.uri,
-      color: detectColorFromFormats(r.formats || []), // ✅ REAL COLOR
-      basePrice: stats?.median_price || 20
-    };
-
-  } catch (err) {
-    console.log("release error:", err.message);
-    return null;
-  }
-}
-
-// ----------------------------
 // QUEUE PROCESSOR
 // ----------------------------
 async function processQueue() {
@@ -183,7 +207,7 @@ async function processQueue() {
 
   history.push(item);
 
-  console.log("📦 Added:", item.title, "| Color:", item.color);
+  console.log("📦 Added:", item.title, "|", item.color);
 }
 
 setInterval(processQueue, 1000);
@@ -197,5 +221,5 @@ app.get("/history", (req, res) => {
 
 // ----------------------------
 app.listen(process.env.PORT || 10000, () => {
-  console.log("🚀 POS RUNNING WITH REAL COLOR DETECTION");
+  console.log("🚀 POS RUNNING (ACCURATE PREVIEW MODE)");
 });
