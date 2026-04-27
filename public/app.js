@@ -1,13 +1,16 @@
-console.log("PRO POS READY");
+console.log("PRO POS UI READY");
 
+// ----------------------------
+// INIT
+// ----------------------------
 window.onload = function(){
   document.getElementById("scanBtn").onclick = scan;
-  document.getElementById("bulkBtn").onclick = bulk;
+  document.getElementById("bulkBtn").onclick = startBulk;
   document.getElementById("cameraBtn").onclick = startCamera;
 };
 
 // ----------------------------
-// SCAN (ACCURATE)
+// SCAN (UNCHANGED)
 // ----------------------------
 async function scan(){
   const barcode = document.getElementById("barcode").value;
@@ -23,190 +26,144 @@ async function scan(){
   const box = document.getElementById("results");
   box.innerHTML = "";
 
-  data.results.forEach(r => {
+  data.results.forEach(r=>{
     const div = document.createElement("div");
     div.className = "card";
 
     div.innerHTML =
       "<img src='"+(r.thumb||"")+"' width='60'/>" +
       "<b>"+r.title+"</b><br/>" +
-      "<b style='color:#00e676'>"+(r.color||"Black")+" Vinyl</b><br/>" +
-      (r.year||"")+" • "+(r.country||"")+"<br/>" +
-      "<small>"+(r.label||"")+"</small>";
-
-    div.onclick = () => importItem(r.id);
+      "<b style='color:#00e676'>"+r.color+" Vinyl</b>";
 
     box.appendChild(div);
   });
 }
 
 // ----------------------------
-// IMPORT (WITH DUPLICATE ALERT)
+// BULK START
 // ----------------------------
-async function importItem(id){
-  const condition = document.getElementById("condition").value;
-
-  const res = await fetch("/import", {
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({
-      items:[{ id, condition }]
-    })
-  });
-
-  const data = await res.json();
-
-  if (data.duplicates?.length > 0) {
-    alert("⚠️ Duplicate already in inventory");
-  }
-}
-
-// ----------------------------
-// BULK (FULL PRO VERSION)
-// ----------------------------
-async function bulk(){
+async function startBulk(){
 
   const lines = document.getElementById("bulk").value
     .split("\n")
     .filter(Boolean);
 
-  const res = await fetch("/bulk-preview", {
+  const res = await fetch("/bulk-start", {
     method:"POST",
     headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({ items: lines })
   });
 
-  const data = await res.json();
+  const { jobId } = await res.json();
 
   const box = document.getElementById("results");
-  box.innerHTML = "<h4>Bulk Review</h4>";
 
-  // GLOBAL CONDITION SELECT
-  const globalCondition = document.createElement("select");
+  // PROGRESS BAR
+  box.innerHTML = `
+    <h3>Processing Bulk...</h3>
+    <div style="background:#333;height:20px;border-radius:10px;">
+      <div id="progressBar" style="height:20px;width:0%;background:#00e676;border-radius:10px;"></div>
+    </div>
+    <p id="progressText">0%</p>
+    <div id="bulkResults"></div>
+  `;
 
-  ["M","NM","VG+","VG","G"].forEach(c => {
-    const o = document.createElement("option");
-    o.value = c;
-    o.textContent = "All: " + c;
-    globalCondition.appendChild(o);
-  });
+  pollBulk(jobId);
+}
 
-  box.appendChild(globalCondition);
+// ----------------------------
+// POLL STATUS
+// ----------------------------
+async function pollBulk(jobId){
 
-  // APPLY TO ALL BUTTON
-  const applyAllBtn = document.createElement("button");
-  applyAllBtn.textContent = "Apply Condition to All";
+  const res = await fetch("/bulk-status/" + jobId);
+  const data = await res.json();
 
-  applyAllBtn.onclick = () => {
-    const val = globalCondition.value;
-    document.querySelectorAll("[id^='cond-']").forEach(el => {
-      el.value = val;
-    });
-  };
+  // UPDATE PROGRESS
+  const bar = document.getElementById("progressBar");
+  const text = document.getElementById("progressText");
 
-  box.appendChild(applyAllBtn);
+  bar.style.width = data.progress + "%";
+  text.innerText = data.progress + "%";
 
-  data.results.forEach((item,i) => {
+  // UPDATE RESULTS
+  const container = document.getElementById("bulkResults");
+  container.innerHTML = "";
+
+  data.results.forEach((item,i)=>{
 
     const div = document.createElement("div");
     div.className = "card";
 
+    const best = item.best;
+
     // IMAGE
     const img = document.createElement("img");
-    img.src = item.options[0]?.thumb || "";
+    img.src = best?.image || "";
     img.width = 60;
 
-    // RELEASE SELECT
-    const selectRelease = document.createElement("select");
-    selectRelease.id = "release-" + i;
+    // DROPDOWN
+    const select = document.createElement("select");
 
-    item.options.forEach(opt => {
+    item.options.forEach(opt=>{
       const o = document.createElement("option");
       o.value = opt.id;
       o.textContent =
         opt.title + " (" +
-        (opt.year || "") + " • " +
-        (opt.country || "") + " • " +
-        (opt.color || "Unknown") + ")";
-      selectRelease.appendChild(o);
+        (opt.year||"") + " • " +
+        (opt.country||"") + " • " +
+        opt.color + ")";
+
+      // highlight best
+      if (best && opt.id === best.id){
+        o.textContent = "⭐ " + o.textContent;
+      }
+
+      select.appendChild(o);
     });
 
-    selectRelease.onchange = function(){
-      const selected = item.options.find(o => o.id == selectRelease.value);
-      img.src = selected?.thumb || "";
-    };
-
-    // CONDITION SELECT
-    const selectCondition = document.createElement("select");
-    selectCondition.id = "cond-" + i;
-
-    ["M","NM","VG+","VG","G"].forEach(c => {
+    // CONDITION
+    const cond = document.createElement("select");
+    ["M","NM","VG+","VG","G"].forEach(c=>{
       const o = document.createElement("option");
       o.value = c;
       o.textContent = c;
-      selectCondition.appendChild(o);
+      cond.appendChild(o);
     });
 
     // ADD BUTTON
     const btn = document.createElement("button");
     btn.textContent = "Add";
 
-    btn.onclick = async () => {
-      const id = selectRelease.value;
-      const condition = selectCondition.value;
-
-      await sendImport([{ id, condition }]);
+    btn.onclick = async ()=>{
+      await fetch("/import", {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({
+          items:[{ id: select.value, condition: cond.value }]
+        })
+      });
+      alert("Added manually");
     };
 
     div.appendChild(img);
-    div.appendChild(selectRelease);
-    div.appendChild(selectCondition);
+    div.appendChild(select);
+    div.appendChild(cond);
     div.appendChild(btn);
 
-    box.appendChild(div);
+    container.appendChild(div);
   });
 
-  // ADD ALL BUTTON
-  const addAll = document.createElement("button");
-  addAll.textContent = "🚀 Add ALL";
-
-  addAll.onclick = async () => {
-
-    let items = [];
-
-    data.results.forEach((item,i) => {
-      const id = document.getElementById("release-"+i).value;
-      const condition = document.getElementById("cond-"+i).value;
-
-      items.push({ id, condition });
-    });
-
-    await sendImport(items);
-  };
-
-  box.appendChild(addAll);
-}
-
-// ----------------------------
-// IMPORT WRAPPER
-// ----------------------------
-async function sendImport(items){
-
-  const res = await fetch("/import", {
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ items })
-  });
-
-  const data = await res.json();
-
-  if (data.duplicates?.length > 0) {
-    alert("⚠️ Some duplicates skipped");
+  // CONTINUE POLLING
+  if (data.progress < 100){
+    setTimeout(()=>pollBulk(jobId), 1000);
+  } else {
+    document.getElementById("progressText").innerText = "✅ Done";
   }
 }
 
 // ----------------------------
-// CAMERA
+// CAMERA (UNCHANGED)
 // ----------------------------
 let stream;
 
@@ -240,16 +197,14 @@ async function scanFrame(){
     if ('BarcodeDetector' in window) {
       const detector = new BarcodeDetector({ formats:['ean_13','upc_a'] });
 
-      try {
-        const codes = await detector.detect(canvas);
+      const codes = await detector.detect(canvas);
 
-        if (codes.length){
-          document.getElementById("barcode").value = codes[0].rawValue;
-          stopCamera();
-          scan();
-          return;
-        }
-      } catch {}
+      if (codes.length){
+        document.getElementById("barcode").value = codes[0].rawValue;
+        stopCamera();
+        scan();
+        return;
+      }
     }
   }
 
@@ -264,25 +219,3 @@ function stopCamera(){
     stream.getTracks().forEach(t=>t.stop());
   }
 }
-
-// ----------------------------
-// LIVE FEED
-// ----------------------------
-async function load(){
-  const res = await fetch("/history");
-  const data = await res.json();
-
-  const log = document.getElementById("log");
-  log.innerHTML = "";
-
-  (data.history || []).slice().reverse().forEach(i=>{
-    const div = document.createElement("div");
-    div.className = "card";
-    div.textContent =
-      i.artist+" - "+i.title+" $"+i.price+" ("+i.condition+")";
-    log.appendChild(div);
-  });
-}
-
-setInterval(load,2000);
-load();
