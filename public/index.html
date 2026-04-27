@@ -1,96 +1,22 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Vinyl POS</title>
-
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      background: #0f1115;
-      color: white;
-      margin: 0;
-      padding: 20px;
-    }
-
-    h1 {
-      margin-bottom: 10px;
-    }
-
-    input, textarea, select, button {
-      width: 100%;
-      padding: 10px;
-      margin-top: 8px;
-      margin-bottom: 12px;
-      border-radius: 6px;
-      border: none;
-      font-size: 16px;
-    }
-
-    textarea {
-      height: 100px;
-    }
-
-    button {
-      background: #00e676;
-      color: black;
-      font-weight: bold;
-      cursor: pointer;
-    }
-
-    button:hover {
-      opacity: 0.9;
-    }
-
-    .card {
-      background: #1a1d23;
-      padding: 12px;
-      border-radius: 10px;
-      margin-bottom: 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-
-    .card img {
-      border-radius: 6px;
-    }
-
-    #progressBar {
-      transition: width 0.3s ease;
-    }
-
-    #camera {
-      margin-top: 10px;
-      border-radius: 8px;
-    }
-
-  </style>
+  <title>POS</title>
 </head>
-
 <body>
 
-  <h1>🎵 Vinyl POS</h1>
+<input id="barcode" placeholder="Scan barcode"/>
+<button id="scanBtn">Scan</button>
 
-  <!-- SCAN -->
-  <input id="barcode" placeholder="Scan or enter barcode" />
-  <button id="scanBtn">Scan</button>
-  <button id="cameraBtn">Camera Scan</button>
+<textarea id="bulk"></textarea>
+<button id="bulkBtn">Bulk</button>
 
-  <!-- BULK -->
-  <textarea id="bulk" placeholder="Paste multiple UPCs (one per line)"></textarea>
-  <button id="bulkBtn">Bulk Import</button>
+<div id="results"></div>
 
-  <!-- CAMERA -->
-  <video id="camera" style="display:none;width:100%;max-width:300px;"></video>
+<!-- 🔥 THIS WAS MISSING -->
+<div id="history"></div>
 
-  <!-- RESULTS -->
-  <div id="results"></div>
-  <div id="history"></div>
-
-  <!-- APP -->
-  <script src="app.js"></script>
+<script src="app.js"></script>
 
 </body>
 </html>

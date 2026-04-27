@@ -17,9 +17,7 @@ function sleep(ms) {
 function cleanTitle(artist, rawTitle){
   if (!rawTitle) return artist;
 
-  // remove duplicated artist if present
   let title = rawTitle.replace(artist + " - ", "");
-
   const parts = title.split(" - ");
 
   if (parts.length > 1) {
@@ -34,40 +32,12 @@ function cleanTitle(artist, rawTitle){
 // ----------------------------
 function detectColorFromFormats(formats = []) {
   const text = JSON.stringify(formats).toLowerCase();
-
-  const colors = [
-    "red","blue","green","yellow","orange","purple",
-    "pink","white","clear","gold","silver",
-    "smoke","marble","splatter"
-  ];
+  const colors = ["red","blue","green","yellow","orange","purple","pink","white","clear","gold","silver","smoke","marble","splatter"];
 
   const found = colors.filter(c => text.includes(c));
-
-  if (found.length) {
-    return found.map(c => c[0].toUpperCase() + c.slice(1)).join(" / ");
-  }
+  if (found.length) return found.map(c => c[0].toUpperCase()+c.slice(1)).join(" / ");
 
   return "Black";
-}
-
-// ----------------------------
-// SMART PICK
-// ----------------------------
-function pickBest(options){
-  if (!options.length) return null;
-
-  return options.sort((a,b)=>{
-    let scoreA = 0;
-    let scoreB = 0;
-
-    if (a.country === "US") scoreA += 2;
-    if (b.country === "US") scoreB += 2;
-
-    if (a.color !== "Black") scoreA += 3;
-    if (b.color !== "Black") scoreB += 3;
-
-    return scoreB - scoreA;
-  })[0];
 }
 
 // ----------------------------
@@ -105,13 +75,8 @@ async function createShopifyProduct(item) {
       },
       body: JSON.stringify({
         product: {
-          title: item.title, // CLEAN TITLE USED HERE
-          body_html: `
-            <strong>${item.artist}</strong><br/>
-            ${item.year || ""} ${item.country || ""}<br/>
-            Color: ${item.color}<br/>
-            Condition: ${item.condition}
-          `,
+          title: item.title,
+          body_html: `${item.artist}<br/>${item.color}<br/>${item.condition}`,
           images: item.image ? [{ src: item.image }] : [],
           variants: [{ price: item.price }]
         }
@@ -119,7 +84,6 @@ async function createShopifyProduct(item) {
     });
 
     const data = await res.json();
-
     if (!res.ok) console.log("❌ Shopify:", data);
     else console.log("✅ Shopify:", data.product?.id);
 
@@ -133,9 +97,7 @@ async function createShopifyProduct(item) {
 // ----------------------------
 async function fetchRelease(id){
   try {
-    const r = await fetch(
-      `https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`
-    ).then(r=>r.json());
+    const r = await fetch(`https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`).then(r=>r.json());
 
     await sleep(150);
 
@@ -145,7 +107,7 @@ async function fetchRelease(id){
     return {
       id,
       artist,
-      title: cleanTitle(artist, rawTitle), // 🔥 CLEANED HERE
+      title: cleanTitle(artist, rawTitle),
       year: r.year,
       country: r.country,
       image: r.images?.[0]?.uri,
@@ -179,10 +141,7 @@ async function processBulk(jobId, items){
   for (let i=0;i<items.length;i++){
     const barcode = items[i];
 
-    const data = await fetch(
-      `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
-    ).then(r=>r.json());
-
+    const data = await fetch(`https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`).then(r=>r.json());
     const top = (data.results||[]).slice(0,5);
 
     let options = [];
@@ -192,7 +151,7 @@ async function processBulk(jobId, items){
       if (full) options.push(full);
     }
 
-    const best = pickBest(options);
+    const best = options[0];
 
     if (best){
       queue.push({ id: best.id, condition: "NM" });
@@ -205,7 +164,6 @@ async function processBulk(jobId, items){
     });
 
     jobs[jobId].done++;
-
     await sleep(250);
   }
 }
@@ -258,6 +216,7 @@ async function processQueue(){
   const item = {...data,condition:job.condition,price};
 
   history.push(item);
+
   await createShopifyProduct(item);
 
   console.log("📦 Added:", item.title);
@@ -266,20 +225,13 @@ async function processQueue(){
 setInterval(processQueue,1000);
 
 // ----------------------------
-// HISTORY (RESTORE THIS)
+// HISTORY (CRITICAL)
 // ----------------------------
 app.get("/history", (req, res) => {
   res.json({ history });
 });
 
 // ----------------------------
-// ----------------------------
-// HISTORY
-// ----------------------------
-app.get("/history", (req, res) => {
-  res.json({ history });
-});
-
 app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 POS RUNNING (CLEAN TITLES)");
+  console.log("🚀 POS RUNNING (WITH HISTORY)");
 });
