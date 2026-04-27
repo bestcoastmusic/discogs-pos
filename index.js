@@ -186,7 +186,55 @@ app.post("/import", (req, res) => {
 // ----------------------------
 // PROCESS QUEUE
 // ----------------------------
-async function processQueue() {
+async function createShopifyProduct(item) {
+  const store = process.env.SHOPIFY_STORE;
+  const token = process.env.SHOPIFY_TOKEN;
+
+  if (!store || !token) {
+    console.log("❌ Missing Shopify credentials");
+    return;
+  }
+
+  try {
+    const res = await fetch(`https://${store}/admin/api/2024-01/products.json`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": token
+      },
+      body: JSON.stringify({
+        product: {
+          title: item.title,
+          body_html: `
+            <strong>${item.artist}</strong><br/>
+            ${item.year || ""} ${item.country || ""}<br/>
+            ${item.label || ""}<br/>
+            Color: ${item.color}<br/>
+            Condition: ${item.condition}
+          `,
+          images: item.image ? [{ src: item.image }] : [],
+          variants: [
+            {
+              price: item.price
+            }
+          ]
+        }
+      })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      console.log("❌ Shopify error:", data);
+    } else {
+      console.log("✅ Shopify created:", data.product?.id);
+    }
+
+  } catch (err) {
+    console.log("❌ Shopify crash:", err.message);
+  }
+}
+async function processQueue() 
   if (!queue.length) return;
 
   const job = queue.shift();
@@ -204,10 +252,16 @@ async function processQueue() {
     price: price.toFixed(2)
   };
 
-  history.push(item);
+  
+console.log("📦 Added:", item.title, "|", item.color, "|", item.condition);
+console.log("📦 Added:", item.title, "|", item.color, "|", item.condition);
 
-  console.log("📦 Added:", item.title, "|", item.color, "|", item.condition);
-}
+history.push(item);
+
+// 🔥 THIS IS THE MISSING LINE
+await createShopifyProduct(item);
+
+console.log("📦 Added:", item.title, "|", item.color, "|", item.condition);}
 
 setInterval(processQueue, 1000);
 
