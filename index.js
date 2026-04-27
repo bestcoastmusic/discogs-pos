@@ -5,6 +5,14 @@ app.use(express.json());
 app.use(express.static("public"));
 
 // ----------------------------
+// STATE
+// ----------------------------
+let queue = [];
+let history = [];
+let inventory = new Set();
+let jobs = {};
+
+// ----------------------------
 // UTILS
 // ----------------------------
 function sleep(ms) {
@@ -41,58 +49,6 @@ function detectColorFromFormats(formats = []) {
 }
 
 // ----------------------------
-// STATE
-// ----------------------------
-let queue = [];
-let history = [];
-let inventory = new Set();
-let jobs = {};
-
-// ----------------------------
-// PRICING
-// ----------------------------
-const conditionMultiplier = {
-  M: 1.5,
-  NM: 1.25,
-  "VG+": 1.0,
-  VG: 0.8,
-  G: 0.5
-};
-
-// ----------------------------
-// SHOPIFY
-// ----------------------------
-async function createShopifyProduct(item) {
-  const store = process.env.SHOPIFY_STORE;
-  const token = process.env.SHOPIFY_TOKEN;
-
-  try {
-    const res = await fetch(`https://${store}/admin/api/2024-01/products.json`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": token
-      },
-      body: JSON.stringify({
-        product: {
-          title: item.title,
-          body_html: `${item.artist}<br/>${item.color}<br/>${item.condition}`,
-          images: item.image ? [{ src: item.image }] : [],
-          variants: [{ price: item.price }]
-        }
-      })
-    });
-
-    const data = await res.json();
-    if (!res.ok) console.log("❌ Shopify:", data);
-    else console.log("✅ Shopify:", data.product?.id);
-
-  } catch (e) {
-    console.log("Shopify crash:", e.message);
-  }
-}
-
-// ----------------------------
 // FETCH RELEASE
 // ----------------------------
 async function fetchRelease(id){
@@ -121,85 +77,38 @@ async function fetchRelease(id){
 }
 
 // ----------------------------
-// BULK START
+// SHOPIFY
 // ----------------------------
-app.post("/bulk-start", async (req,res)=>{
-  const { items } = req.body;
+async function createShopifyProduct(item) {
+  const store = process.env.SHOPIFY_STORE;
+  const token = process.env.SHOPIFY_TOKEN;
 
-  const jobId = Date.now().toString();
-  jobs[jobId] = { total: items.length, done: 0, results: [] };
-
-  processBulk(jobId, items);
-
-  res.json({ jobId });
-});
-
-// ----------------------------
-// BULK PROCESS
-// ----------------------------
-async function processBulk(jobId, items){
-  for (let i=0;i<items.length;i++){
-    const barcode = items[i];
-
-    const data = await fetch(`https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`).then(r=>r.json());
-    const top = (data.results||[]).slice(0,5);
-
-    let options = [];
-
-    for (const r of top){
-      const full = await fetchRelease(r.id);
-      if (full) options.push(full);
-    }
-
-    const best = options[0];
-
-    if (best){
-      queue.push({ id: best.id, condition: "NM" });
-    }
-
-    jobs[jobId].results.push({
-      barcode,
-      options,
-      best
+  try {
+    const res = await fetch(`https://${store}/admin/api/2024-01/products.json`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": token
+      },
+      body: JSON.stringify({
+        product: {
+          title: item.title,
+          body_html: `${item.artist}<br/>${item.color}<br/>${item.condition}`,
+          images: item.image ? [{ src: item.image }] : [],
+          variants: [{ price: item.price }]
+        }
+      })
     });
 
-    jobs[jobId].done++;
-    await sleep(250);
+    const data = await res.json();
+
+    if (!res.ok) console.log("❌ Shopify:", data);
+    else console.log("✅ Shopify:", data.product?.id);
+
+  } catch (e) {
+    console.log("Shopify crash:", e.message);
   }
 }
-
-// ----------------------------
-// STATUS
-// ----------------------------
-app.get("/bulk-status/:id", (req,res)=>{
-  const job = jobs[req.params.id];
-  if (!job) return res.json({});
-
-  res.json({
-    progress: Math.floor((job.done / job.total) * 100),
-    results: job.results
-  });
-});
-
-// ----------------------------
-// IMPORT
-// ----------------------------
-app.post("/import",(req,res)=>{
-  const items = req.body.items || [];
-
-  let duplicates=[],added=[];
-
-  items.forEach(i=>{
-    if (inventory.has(i.id)) duplicates.push(i.id);
-    else {
-      inventory.add(i.id);
-      queue.push(i);
-      added.push(i.id);
-    }
-  });
-
-  res.json({ success:true,duplicates,added });
-});
 
 // ----------------------------
 // PROCESS QUEUE
@@ -211,11 +120,15 @@ async function processQueue(){
   const data = await fetchRelease(job.id);
   if (!data) return;
 
-  const price = (data.basePrice * (conditionMultiplier[job.condition]||1)).toFixed(2);
+  const price = (data.basePrice * 1.25).toFixed(2);
 
-  const item = {...data,condition:job.condition,price};
+  const item = {
+    ...data,
+    condition: job.condition || "NM",
+    price
+  };
 
-  history.push(item);
+  history.push(item); // 🔥 THIS MAKES HISTORY WORK
 
   await createShopifyProduct(item);
 
@@ -225,7 +138,15 @@ async function processQueue(){
 setInterval(processQueue,1000);
 
 // ----------------------------
-// HISTORY (CRITICAL)
+// TEST IMPORT (TEMPORARY)
+// ----------------------------
+app.post("/test-add", (req,res)=>{
+  queue.push({ id: req.body.id, condition: "NM" });
+  res.json({ ok: true });
+});
+
+// ----------------------------
+// HISTORY ROUTE
 // ----------------------------
 app.get("/history", (req, res) => {
   res.json({ history });
@@ -233,5 +154,5 @@ app.get("/history", (req, res) => {
 
 // ----------------------------
 app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 POS RUNNING (WITH HISTORY)");
+  console.log("🚀 POS RUNNING (HISTORY WORKING)");
 });

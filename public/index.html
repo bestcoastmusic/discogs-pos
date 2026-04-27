@@ -1,19 +1,70 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>POS</title>
+  <title>Vinyl POS</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #0f1115;
+      color: white;
+      margin: 0;
+      padding: 20px;
+    }
+
+    h1 { margin-bottom: 10px; }
+
+    input, textarea, button {
+      width: 100%;
+      padding: 10px;
+      margin-top: 8px;
+      margin-bottom: 12px;
+      border-radius: 6px;
+      border: none;
+      font-size: 16px;
+    }
+
+    textarea { height: 100px; }
+
+    button {
+      background: #00e676;
+      color: black;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    .card {
+      background: #1a1d23;
+      padding: 12px;
+      border-radius: 10px;
+      margin-bottom: 12px;
+    }
+
+    #progressBar {
+      transition: width 0.3s ease;
+    }
+
+    #history {
+      margin-top: 30px;
+      border-top: 1px solid #333;
+      padding-top: 10px;
+    }
+  </style>
 </head>
+
 <body>
 
-<input id="barcode" placeholder="Scan barcode"/>
+<h1>🎵 Vinyl POS</h1>
+
+<input id="barcode" placeholder="Scan barcode" />
 <button id="scanBtn">Scan</button>
 
-<textarea id="bulk"></textarea>
-<button id="bulkBtn">Bulk</button>
+<textarea id="bulk" placeholder="Paste UPCs (one per line)"></textarea>
+<button id="bulkBtn">Bulk Import</button>
 
 <div id="results"></div>
 
-<!-- 🔥 THIS WAS MISSING -->
 <div id="history"></div>
 
 <script src="app.js"></script>
