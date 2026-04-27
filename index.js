@@ -273,6 +273,13 @@ app.get("/history", (req, res) => {
 });
 
 // ----------------------------
+// ----------------------------
+// HISTORY
+// ----------------------------
+app.get("/history", (req, res) => {
+  res.json({ history });
+});
+
 app.listen(process.env.PORT || 10000, ()=>{
   console.log("🚀 POS RUNNING (CLEAN TITLES)");
 });
