@@ -1,32 +1,20 @@
-console.log("APP LOADED");
+console.log("POS UI RESTORED");
 
 // ----------------------------
 // INIT
 // ----------------------------
 window.onload = function(){
-
-  const scanBtn = document.getElementById("scanBtn");
-
-  if (scanBtn){
-    scanBtn.addEventListener("click", scan);
-  }
-
-  const bulkBtn = document.getElementById("bulkBtn");
-
-  if (bulkBtn){
-    bulkBtn.addEventListener("click", startBulk);
-  }
+  document.getElementById("scanBtn").onclick = scan;
+  document.getElementById("bulkBtn").onclick = startBulk;
 
   loadHistory();
   setInterval(loadHistory, 2000);
 };
 
 // ----------------------------
-// SCAN (FIXED)
+// SCAN (FULL FEATURE VERSION)
 // ----------------------------
 async function scan(){
-
-  console.log("SCAN CLICKED");
 
   const barcode = document.getElementById("barcode").value;
 
@@ -35,47 +23,90 @@ async function scan(){
     return;
   }
 
-  try {
+  const res = await fetch("/search", {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ barcode })
+  });
 
-    const res = await fetch("/search", {
+  const data = await res.json();
+
+  const box = document.getElementById("results");
+  box.innerHTML = "";
+
+  if (!data.results || data.results.length === 0){
+    box.innerHTML = "<p>No results</p>";
+    return;
+  }
+
+  const options = data.results;
+  const best = options[0];
+
+  const div = document.createElement("div");
+  div.className = "card";
+
+  div.innerHTML = `
+    <img src="${best.image || ""}" width="60"/>
+    <b>${best.title}</b><br/>
+    ${best.year || ""} • ${best.country || ""}<br/>
+    <span style="color:#00e676">${best.color || "Black"} Vinyl</span>
+  `;
+
+  // VARIANT DROPDOWN
+  const select = document.createElement("select");
+
+  options.forEach(opt=>{
+    const o = document.createElement("option");
+    o.value = opt.id;
+
+    o.textContent =
+      (opt.id === best.id ? "⭐ " : "") +
+      `${opt.title} (${opt.year || "?"} • ${opt.country || "?"} • ${opt.color || "Black"})`;
+
+    select.appendChild(o);
+  });
+
+  // CONDITION
+  const cond = document.createElement("select");
+
+  ["M","NM","VG+","VG","G"].forEach(c=>{
+    const o = document.createElement("option");
+    o.value = c;
+    o.textContent = c;
+    cond.appendChild(o);
+  });
+
+  // ADD BUTTON
+  const btn = document.createElement("button");
+  btn.textContent = "Add";
+
+  btn.onclick = async ()=>{
+    const res = await fetch("/import", {
       method:"POST",
       headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ barcode })
+      body: JSON.stringify({
+        items:[{ id: select.value, condition: cond.value }]
+      })
     });
 
     const data = await res.json();
 
-    console.log("RESULT:", data);
-
-    const box = document.getElementById("results");
-    box.innerHTML = "";
-
-    if (!data.results || data.results.length === 0){
-      box.innerHTML = "<p>No results</p>";
-      return;
+    if (data.duplicates && data.duplicates.length){
+      alert("Duplicate detected");
+    } else {
+      alert("Added");
     }
+  };
 
-    data.results.forEach(r=>{
-      const div = document.createElement("div");
-      div.className = "card";
+  div.appendChild(select);
+  div.appendChild(cond);
+  div.appendChild(btn);
 
-      div.innerHTML = `
-        <img src="${r.thumb || r.image || ""}" width="60"/>
-        <b>${r.title}</b><br/>
-        ${r.year || ""} • ${r.country || ""}<br/>
-        <span style="color:#00e676">${r.color || "Black"}</span>
-      `;
-
-      box.appendChild(div);
-    });
-
-  } catch (err){
-    console.log("SCAN ERROR:", err);
-  }
+  box.appendChild(div);
 }
 
 // ----------------------------
-// BULK
+// BULK (UNCHANGED)
 // ----------------------------
 async function startBulk(){
 
@@ -95,8 +126,8 @@ async function startBulk(){
 
   box.innerHTML = `
     <h3>Processing...</h3>
-    <div style="background:#333;height:20px;">
-      <div id="progressBar" style="height:20px;width:0%;background:#00e676;"></div>
+    <div style="background:#333;height:20px;border-radius:10px;">
+      <div id="progressBar" style="height:20px;width:0%;background:#00e676;border-radius:10px;"></div>
     </div>
     <p id="progressText">0%</p>
   `;
@@ -120,7 +151,6 @@ async function pollBulk(jobId){
 // HISTORY
 // ----------------------------
 async function loadHistory(){
-
   try {
     const res = await fetch("/history");
     const data = await res.json();
