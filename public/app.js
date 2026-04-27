@@ -1,45 +1,77 @@
-console.log("POS UI LOADED");
+console.log("APP LOADED");
 
 // ----------------------------
 // INIT
 // ----------------------------
 window.onload = function(){
-  document.getElementById("scanBtn").onclick = scan;
-  document.getElementById("bulkBtn").onclick = startBulk;
+
+  const scanBtn = document.getElementById("scanBtn");
+
+  if (scanBtn){
+    scanBtn.addEventListener("click", scan);
+  }
+
+  const bulkBtn = document.getElementById("bulkBtn");
+
+  if (bulkBtn){
+    bulkBtn.addEventListener("click", startBulk);
+  }
 
   loadHistory();
   setInterval(loadHistory, 2000);
 };
 
 // ----------------------------
-// SCAN
+// SCAN (FIXED)
 // ----------------------------
 async function scan(){
+
+  console.log("SCAN CLICKED");
+
   const barcode = document.getElementById("barcode").value;
 
-  const res = await fetch("/search", {
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ barcode })
-  });
+  if (!barcode){
+    alert("Enter barcode");
+    return;
+  }
 
-  const data = await res.json();
+  try {
 
-  const box = document.getElementById("results");
-  box.innerHTML = "";
+    const res = await fetch("/search", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ barcode })
+    });
 
-  data.results.forEach(r=>{
-    const div = document.createElement("div");
-    div.className = "card";
+    const data = await res.json();
 
-    div.innerHTML =
-      "<img src='"+(r.image||"")+"' width='60'/>" +
-      "<b>"+r.title+"</b><br/>" +
-      (r.year||"") + " • " + (r.country||"") + "<br/>" +
-      "<span style='color:#00e676'>" + (r.color||"Black") + "</span>";
+    console.log("RESULT:", data);
 
-    box.appendChild(div);
-  });
+    const box = document.getElementById("results");
+    box.innerHTML = "";
+
+    if (!data.results || data.results.length === 0){
+      box.innerHTML = "<p>No results</p>";
+      return;
+    }
+
+    data.results.forEach(r=>{
+      const div = document.createElement("div");
+      div.className = "card";
+
+      div.innerHTML = `
+        <img src="${r.thumb || r.image || ""}" width="60"/>
+        <b>${r.title}</b><br/>
+        ${r.year || ""} • ${r.country || ""}<br/>
+        <span style="color:#00e676">${r.color || "Black"}</span>
+      `;
+
+      box.appendChild(div);
+    });
+
+  } catch (err){
+    console.log("SCAN ERROR:", err);
+  }
 }
 
 // ----------------------------
@@ -63,8 +95,8 @@ async function startBulk(){
 
   box.innerHTML = `
     <h3>Processing...</h3>
-    <div style="background:#333;height:20px;border-radius:10px;">
-      <div id="progressBar" style="height:20px;width:0%;background:#00e676;border-radius:10px;"></div>
+    <div style="background:#333;height:20px;">
+      <div id="progressBar" style="height:20px;width:0%;background:#00e676;"></div>
     </div>
     <p id="progressText">0%</p>
   `;
@@ -88,12 +120,12 @@ async function pollBulk(jobId){
 // HISTORY
 // ----------------------------
 async function loadHistory(){
+
   try {
     const res = await fetch("/history");
     const data = await res.json();
 
     const box = document.getElementById("history");
-
     if (!box) return;
 
     box.innerHTML = "<h3>Recent Adds</h3>";
@@ -111,7 +143,5 @@ async function loadHistory(){
       box.appendChild(div);
     });
 
-  } catch (err){
-    console.log("history error", err);
-  }
+  } catch {}
 }
