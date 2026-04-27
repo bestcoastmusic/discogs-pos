@@ -5,6 +5,13 @@ app.use(express.json());
 app.use(express.static("public"));
 
 // ----------------------------
+// UTILS
+// ----------------------------
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ----------------------------
 // COLOR DETECTION
 // ----------------------------
 function detectColorFromFormats(formats = []) {
@@ -54,9 +61,6 @@ async function createShopifyProduct(item) {
   const store = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_TOKEN;
 
-  console.log("STORE:", store);
-  console.log("TOKEN START:", token?.slice(0,8));
-
   if (!store || !token) {
     console.log("❌ Missing Shopify credentials");
     return;
@@ -80,11 +84,7 @@ async function createShopifyProduct(item) {
             Condition: ${item.condition}
           `,
           images: item.image ? [{ src: item.image }] : [],
-          variants: [
-            {
-              price: item.price
-            }
-          ]
+          variants: [{ price: item.price }]
         }
       })
     });
@@ -110,6 +110,8 @@ async function fetchRelease(id) {
     const r = await fetch(
       `https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`
     ).then(x => x.json());
+
+    await sleep(200); // rate limit protection
 
     const stats = await fetch(
       `https://api.discogs.com/marketplace/stats/${id}?token=${process.env.DISCOGS_TOKEN}`
@@ -137,7 +139,7 @@ async function fetchRelease(id) {
 }
 
 // ----------------------------
-// SEARCH (ACCURATE)
+// SEARCH (single)
 // ----------------------------
 app.post("/search", async (req, res) => {
   const { barcode } = req.body;
@@ -149,12 +151,11 @@ app.post("/search", async (req, res) => {
 
     const top = (data.results || []).slice(0, 5);
 
-    const results = await Promise.all(
-      top.map(async (r) => {
-        const full = await fetchRelease(r.id);
-        if (!full) return null;
-
-        return {
+    const results = [];
+    for (const r of top) {
+      const full = await fetchRelease(r.id);
+      if (full) {
+        results.push({
           id: full.id,
           title: full.title,
           year: full.year,
@@ -162,11 +163,11 @@ app.post("/search", async (req, res) => {
           label: full.label,
           thumb: full.image,
           color: full.color
-        };
-      })
-    );
+        });
+      }
+    }
 
-    res.json({ results: results.filter(Boolean) });
+    res.json({ results });
 
   } catch (err) {
     console.log("search error:", err.message);
@@ -175,13 +176,18 @@ app.post("/search", async (req, res) => {
 });
 
 // ----------------------------
-// BULK PREVIEW
+// BULK PREVIEW (SCALED)
 // ----------------------------
 app.post("/bulk-preview", async (req, res) => {
   const { items } = req.body;
 
-  try {
-    const results = await Promise.all(items.map(async (barcode) => {
+  const results = [];
+
+  for (let i = 0; i < items.length; i++) {
+    const barcode = items[i];
+
+    try {
+      console.log(`🔄 Processing ${i+1}/${items.length}`);
 
       const data = await fetch(
         `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
@@ -189,34 +195,33 @@ app.post("/bulk-preview", async (req, res) => {
 
       const top = (data.results || []).slice(0, 5);
 
-      const options = await Promise.all(
-        top.map(async (r) => {
-          const full = await fetchRelease(r.id);
-          if (!full) return null;
+      const options = [];
 
-          return {
+      for (const r of top) {
+        const full = await fetchRelease(r.id);
+        if (full) {
+          options.push({
             id: full.id,
             title: full.title,
             year: full.year,
             country: full.country,
             thumb: full.image,
             color: full.color
-          };
-        })
-      );
+          });
+        }
+      }
 
-      return {
-        barcode,
-        options: options.filter(Boolean)
-      };
-    }));
+      results.push({ barcode, options });
 
-    res.json({ results });
+      await sleep(300); // 🔥 prevents rate limit
 
-  } catch (err) {
-    console.log("bulk error:", err.message);
-    res.json({ results: [] });
+    } catch (err) {
+      console.log("bulk error:", err.message);
+      results.push({ barcode, options: [] });
+    }
   }
+
+  res.json({ results });
 });
 
 // ----------------------------
@@ -267,7 +272,7 @@ async function processQueue() {
 
   await createShopifyProduct(item);
 
-  console.log("📦 Added:", item.title, "|", item.color, "|", item.condition);
+  console.log("📦 Added:", item.title);
 }
 
 setInterval(processQueue, 1000);
@@ -281,5 +286,5 @@ app.get("/history", (req, res) => {
 
 // ----------------------------
 app.listen(process.env.PORT || 10000, () => {
-  console.log("🚀 POS RUNNING (FINAL BUILD)");
+  console.log("🚀 POS RUNNING (SCALED BULK MODE)");
 });
