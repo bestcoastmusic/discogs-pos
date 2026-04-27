@@ -10,7 +10,7 @@ window.onload = function(){
 };
 
 // ----------------------------
-// SCAN (UNCHANGED)
+// SCAN
 // ----------------------------
 async function scan(){
   const barcode = document.getElementById("barcode").value;
@@ -31,9 +31,10 @@ async function scan(){
     div.className = "card";
 
     div.innerHTML =
-      "<img src='"+(r.thumb||"")+"' width='60'/>" +
-      "<b>"+r.title+"</b><br/>" +
-      "<b style='color:#00e676'>"+r.color+" Vinyl</b>";
+      "<img src='"+(r.thumb || r.image || "")+"' width='60'/>" +
+      "<b>"+(r.title || "")+"</b><br/>" +
+      (r.year || "") + " • " + (r.country || "") + "<br/>" +
+      "<span style='color:#00e676'>" + (r.color || "Black") + " Vinyl</span>";
 
     box.appendChild(div);
   });
@@ -43,6 +44,8 @@ async function scan(){
 // BULK START
 // ----------------------------
 async function startBulk(){
+
+  console.log("START BULK CLICKED");
 
   const lines = document.getElementById("bulk").value
     .split("\n")
@@ -58,10 +61,9 @@ async function startBulk(){
 
   const box = document.getElementById("results");
 
-  // PROGRESS BAR
   box.innerHTML = `
     <h3>Processing Bulk...</h3>
-    <div style="background:#333;height:20px;border-radius:10px;">
+    <div style="background:#333;height:20px;border-radius:10px;margin-bottom:10px;">
       <div id="progressBar" style="height:20px;width:0%;background:#00e676;border-radius:10px;"></div>
     </div>
     <p id="progressText">0%</p>
@@ -72,35 +74,42 @@ async function startBulk(){
 }
 
 // ----------------------------
-// POLL STATUS
+// POLL BULK STATUS
 // ----------------------------
 async function pollBulk(jobId){
 
   const res = await fetch("/bulk-status/" + jobId);
   const data = await res.json();
 
-  // UPDATE PROGRESS
+  // progress bar
   const bar = document.getElementById("progressBar");
   const text = document.getElementById("progressText");
 
-  bar.style.width = data.progress + "%";
-  text.innerText = data.progress + "%";
+  if (bar) bar.style.width = data.progress + "%";
+  if (text) text.innerText = data.progress + "%";
 
-  // UPDATE RESULTS
   const container = document.getElementById("bulkResults");
   container.innerHTML = "";
 
-  data.results.forEach((item,i)=>{
+  data.results.forEach((item)=>{
 
     const div = document.createElement("div");
     div.className = "card";
 
     const best = item.best;
 
-    // IMAGE
+    // IMAGE (fixed)
     const img = document.createElement("img");
-    img.src = best?.image || "";
+    img.src = best?.image || item.options?.[0]?.image || "";
     img.width = 60;
+
+    // INFO TEXT (NEW — THIS FIXES YOUR BLANK UI)
+    const info = document.createElement("div");
+
+    info.innerHTML =
+      "<b>" + (best?.title || "Loading...") + "</b><br/>" +
+      (best?.year || "") + " • " + (best?.country || "") + "<br/>" +
+      "<span style='color:#00e676'>" + (best?.color || "Black") + " Vinyl</span>";
 
     // DROPDOWN
     const select = document.createElement("select");
@@ -108,13 +117,13 @@ async function pollBulk(jobId){
     item.options.forEach(opt=>{
       const o = document.createElement("option");
       o.value = opt.id;
-      o.textContent =
-        opt.title + " (" +
-        (opt.year||"") + " • " +
-        (opt.country||"") + " • " +
-        opt.color + ")";
 
-      // highlight best
+      o.textContent =
+        (opt.title || "Unknown") + " (" +
+        (opt.year || "?") + " • " +
+        (opt.country || "?") + " • " +
+        (opt.color || "Black") + ")";
+
       if (best && opt.id === best.id){
         o.textContent = "⭐ " + o.textContent;
       }
@@ -147,6 +156,7 @@ async function pollBulk(jobId){
     };
 
     div.appendChild(img);
+    div.appendChild(info);
     div.appendChild(select);
     div.appendChild(cond);
     div.appendChild(btn);
@@ -154,7 +164,6 @@ async function pollBulk(jobId){
     container.appendChild(div);
   });
 
-  // CONTINUE POLLING
   if (data.progress < 100){
     setTimeout(()=>pollBulk(jobId), 1000);
   } else {
