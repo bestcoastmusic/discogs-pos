@@ -54,6 +54,9 @@ async function createShopifyProduct(item) {
   const store = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_TOKEN;
 
+  console.log("STORE:", store);
+  console.log("TOKEN START:", token?.slice(0,8));
+
   if (!store || !token) {
     console.log("❌ Missing Shopify credentials");
     return;
@@ -112,10 +115,13 @@ async function fetchRelease(id) {
       `https://api.discogs.com/marketplace/stats/${id}?token=${process.env.DISCOGS_TOKEN}`
     ).then(x => x.json()).catch(() => null);
 
+    const artist = r.artists?.[0]?.name || "Unknown";
+    const title = r.title || "Unknown Title";
+
     return {
       id,
-      artist: r.artists?.[0]?.name || "Unknown",
-      title: r.title,
+      artist,
+      title: artist + " - " + title,
       year: r.year,
       country: r.country,
       label: r.labels?.[0]?.name,
@@ -131,7 +137,7 @@ async function fetchRelease(id) {
 }
 
 // ----------------------------
-// SEARCH
+// SEARCH (ACCURATE)
 // ----------------------------
 app.post("/search", async (req, res) => {
   const { barcode } = req.body;
@@ -275,5 +281,5 @@ app.get("/history", (req, res) => {
 
 // ----------------------------
 app.listen(process.env.PORT || 10000, () => {
-  console.log("🚀 POS RUNNING");
+  console.log("🚀 POS RUNNING (FINAL BUILD)");
 });
