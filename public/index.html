@@ -12,7 +12,7 @@
       padding: 20px;
     }
 
-    input, textarea, button {
+    input, textarea, button, select {
       width: 100%;
       padding: 10px;
       margin: 10px 0;
@@ -39,7 +39,11 @@
 <h2>Vinyl POS</h2>
 
 <input id="barcode" placeholder="Scan barcode"/>
+
 <button id="scanBtn">Scan</button>
+<button id="cameraBtn">Camera Scan</button>
+
+<video id="camera" style="display:none;width:100%;max-width:300px;"></video>
 
 <textarea id="bulk"></textarea>
 <button id="bulkBtn">Bulk</button>

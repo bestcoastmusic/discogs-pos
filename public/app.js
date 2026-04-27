@@ -1,4 +1,4 @@
-console.log("POS UI RESTORED");
+console.log("POS UI FULL");
 
 // ----------------------------
 // INIT
@@ -6,13 +6,14 @@ console.log("POS UI RESTORED");
 window.onload = function(){
   document.getElementById("scanBtn").onclick = scan;
   document.getElementById("bulkBtn").onclick = startBulk;
+  document.getElementById("cameraBtn").onclick = startCamera;
 
   loadHistory();
   setInterval(loadHistory, 2000);
 };
 
 // ----------------------------
-// SCAN (FULL FEATURE VERSION)
+// SCAN (FULL POS)
 // ----------------------------
 async function scan(){
 
@@ -52,7 +53,7 @@ async function scan(){
     <span style="color:#00e676">${best.color || "Black"} Vinyl</span>
   `;
 
-  // VARIANT DROPDOWN
+  // VARIANTS
   const select = document.createElement("select");
 
   options.forEach(opt=>{
@@ -76,7 +77,7 @@ async function scan(){
     cond.appendChild(o);
   });
 
-  // ADD BUTTON
+  // ADD
   const btn = document.createElement("button");
   btn.textContent = "Add";
 
@@ -92,7 +93,7 @@ async function scan(){
     const data = await res.json();
 
     if (data.duplicates && data.duplicates.length){
-      alert("Duplicate detected");
+      alert("Duplicate");
     } else {
       alert("Added");
     }
@@ -106,7 +107,7 @@ async function scan(){
 }
 
 // ----------------------------
-// BULK (UNCHANGED)
+// BULK
 // ----------------------------
 async function startBulk(){
 
@@ -174,4 +175,75 @@ async function loadHistory(){
     });
 
   } catch {}
+}
+
+// ----------------------------
+// CAMERA (FULL)
+// ----------------------------
+let stream;
+
+async function startCamera(){
+
+  const video = document.getElementById("camera");
+
+  video.style.display = "block";
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment" }
+    });
+
+    video.srcObject = stream;
+    video.play();
+
+    scanFrame();
+
+  } catch {
+    alert("Camera not supported");
+  }
+}
+
+async function scanFrame(){
+
+  const video = document.getElementById("camera");
+
+  if (video.readyState === video.HAVE_ENOUGH_DATA) {
+
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    ctx.drawImage(video, 0, 0);
+
+    if ("BarcodeDetector" in window) {
+
+      const detector = new BarcodeDetector({
+        formats: ["ean_13","upc_a"]
+      });
+
+      const codes = await detector.detect(canvas);
+
+      if (codes.length){
+        document.getElementById("barcode").value = codes[0].rawValue;
+
+        stopCamera();
+        scan();
+        return;
+      }
+    }
+  }
+
+  requestAnimationFrame(scanFrame);
+}
+
+function stopCamera(){
+
+  const video = document.getElementById("camera");
+  video.style.display = "none";
+
+  if (stream){
+    stream.getTracks().forEach(t => t.stop());
+  }
 }
