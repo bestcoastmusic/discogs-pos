@@ -1,184 +1,279 @@
-require('dotenv').config();
-const express = require('express');
-const fetch = require('node-fetch');
-
+const express = require("express");
 const app = express();
+
 app.use(express.json());
+app.use(express.static("public"));
 
-// 🔑 ENV
-const SHOPIFY_STORE = process.env.SHOPIFY_STORE;
-const SHOPIFY_TOKEN = process.env.SHOPIFY_TOKEN;
-const DISCOGS_TOKEN = process.env.DISCOGS_TOKEN;
+// ----------------------------
+// COLOR DETECTION
+// ----------------------------
+function detectColorFromFormats(formats = []) {
+  const text = JSON.stringify(formats).toLowerCase();
 
-// -----------------------------
-// 🟢 HEALTH CHECK
-// -----------------------------
-app.get('/', (req, res) => {
-  res.send('✅ Discogs → Shopify app running');
-});
+  const colors = [
+    "red","blue","green","yellow","orange","purple",
+    "pink","white","clear","gold","silver",
+    "smoke","smokey","marble","splatter","translucent"
+  ];
 
-// -----------------------------
-// 🔍 SEARCH DISCOGS (text)
-// -----------------------------
-app.get('/search', async (req, res) => {
-  try {
-    const query = req.query.q;
+  const found = colors.filter(c => text.includes(c));
 
-    const url = `https://api.discogs.com/database/search?q=${encodeURIComponent(query)}&type=release&token=${DISCOGS_TOKEN}`;
-
-    const response = await fetch(url);
-    const data = await response.json();
-
-    const results = data.results.slice(0, 15).map(item => ({
-      id: item.id,
-      title: item.title,
-      year: item.year,
-      format: item.format,
-      cover: item.cover_image,
-    }));
-
-    res.json(results);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send('Search failed');
-  }
-});
-
-// -----------------------------
-// 📷 BARCODE LOOKUP
-// -----------------------------
-app.get('/barcode/:code', async (req, res) => {
-  try {
-    const barcode = req.params.code;
-
-    const url = `https://api.discogs.com/database/search?barcode=${barcode}&token=${DISCOGS_TOKEN}`;
-
-    const response = await fetch(url);
-    const data = await response.json();
-
-    const results = data.results.map(item => ({
-      id: item.id,
-      title: item.title,
-      year: item.year,
-      format: item.format,
-      cover: item.cover_image,
-    }));
-
-    res.json(results);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send('Barcode lookup failed');
-  }
-});
-
-// -----------------------------
-// 📦 ADD PRODUCT TO SHOPIFY
-// -----------------------------
-async function addToShopify(product) {
-  const response = await fetch(
-    `https://${SHOPIFY_STORE}/admin/api/2024-01/products.json`,
-    {
-      method: 'POST',
-      headers: {
-        'X-Shopify-Access-Token': SHOPIFY_TOKEN,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(product),
-    }
-  );
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(JSON.stringify(data));
+  if (found.length > 1) {
+    return found.map(c => c.charAt(0).toUpperCase() + c.slice(1)).join(" / ");
   }
 
-  return data;
+  if (found.length === 1) {
+    return found[0].charAt(0).toUpperCase() + found[0].slice(1);
+  }
+
+  return "Black";
 }
 
-// -----------------------------
-// ➕ SINGLE ADD
-// -----------------------------
-app.post('/add-product', async (req, res) => {
-  try {
-    const { title, artist, price, image, year, format } = req.body;
+// ----------------------------
+// STATE
+// ----------------------------
+let queue = [];
+let history = [];
+let inventory = new Set();
 
-    const productData = {
-      product: {
-        title: `${artist} - ${title}`,
-        body_html: `
-          <strong>${artist}</strong><br/>
-          ${title}<br/>
-          ${year || ''} ${format || ''}
-        `,
-        images: image ? [{ src: image }] : [],
-        variants: [
-          {
-            price: price || '19.99',
-          },
-        ],
+// ----------------------------
+// PRICING
+// ----------------------------
+const conditionMultiplier = {
+  M: 1.5,
+  NM: 1.25,
+  "VG+": 1.0,
+  VG: 0.8,
+  G: 0.5
+};
+
+// ----------------------------
+// SHOPIFY
+// ----------------------------
+async function createShopifyProduct(item) {
+  const store = process.env.SHOPIFY_STORE;
+  const token = process.env.SHOPIFY_TOKEN;
+
+  if (!store || !token) {
+    console.log("❌ Missing Shopify credentials");
+    return;
+  }
+
+  try {
+    const res = await fetch(`https://${store}/admin/api/2024-01/products.json`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": token
       },
+      body: JSON.stringify({
+        product: {
+          title: item.title,
+          body_html: `
+            <strong>${item.artist}</strong><br/>
+            ${item.year || ""} ${item.country || ""}<br/>
+            ${item.label || ""}<br/>
+            Color: ${item.color}<br/>
+            Condition: ${item.condition}
+          `,
+          images: item.image ? [{ src: item.image }] : [],
+          variants: [
+            {
+              price: item.price
+            }
+          ]
+        }
+      })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      console.log("❌ Shopify error:", data);
+    } else {
+      console.log("✅ Shopify created:", data.product?.id);
+    }
+
+  } catch (err) {
+    console.log("❌ Shopify crash:", err.message);
+  }
+}
+
+// ----------------------------
+// FETCH RELEASE
+// ----------------------------
+async function fetchRelease(id) {
+  try {
+    const r = await fetch(
+      `https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`
+    ).then(x => x.json());
+
+    const stats = await fetch(
+      `https://api.discogs.com/marketplace/stats/${id}?token=${process.env.DISCOGS_TOKEN}`
+    ).then(x => x.json()).catch(() => null);
+
+    return {
+      id,
+      artist: r.artists?.[0]?.name || "Unknown",
+      title: r.title,
+      year: r.year,
+      country: r.country,
+      label: r.labels?.[0]?.name,
+      image: r.images?.[0]?.uri,
+      color: detectColorFromFormats(r.formats || []),
+      basePrice: stats?.median_price || 20
     };
 
-    const data = await addToShopify(productData);
-
-    console.log('✅ Added:', productData.product.title);
-    res.json(data);
   } catch (err) {
-    console.error('❌ Error:', err.message);
-    res.status(500).send('Add failed');
+    console.log("release error:", err.message);
+    return null;
   }
-});
+}
 
-// -----------------------------
-// 📦 BULK IMPORT
-// -----------------------------
-app.post('/bulk-import', async (req, res) => {
+// ----------------------------
+// SEARCH
+// ----------------------------
+app.post("/search", async (req, res) => {
+  const { barcode } = req.body;
+
   try {
-    const items = req.body.items;
+    const data = await fetch(
+      `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
+    ).then(r => r.json());
 
-    if (!items || !Array.isArray(items)) {
-      return res.status(400).send('Invalid items');
-    }
+    const top = (data.results || []).slice(0, 5);
 
-    const results = [];
+    const results = await Promise.all(
+      top.map(async (r) => {
+        const full = await fetchRelease(r.id);
+        if (!full) return null;
 
-    for (const item of items) {
-      try {
-        const productData = {
-          product: {
-            title: item.title,
-            body_html: item.description || '',
-            images: item.image ? [{ src: item.image }] : [],
-            variants: [
-              {
-                price: item.price || '19.99',
-              },
-            ],
-          },
+        return {
+          id: full.id,
+          title: full.title,
+          year: full.year,
+          country: full.country,
+          label: full.label,
+          thumb: full.image,
+          color: full.color
         };
+      })
+    );
 
-        const created = await addToShopify(productData);
+    res.json({ results: results.filter(Boolean) });
 
-        console.log('📦 Added:', item.title);
-        results.push({ success: true, title: item.title });
-      } catch (err) {
-        console.error('❌ Failed:', item.title);
-        results.push({ success: false, title: item.title });
-      }
-    }
-
-    res.json(results);
   } catch (err) {
-    console.error(err);
-    res.status(500).send('Bulk import failed');
+    console.log("search error:", err.message);
+    res.json({ results: [] });
   }
 });
 
-// -----------------------------
-// 🚀 START SERVER
-// -----------------------------
-const PORT = 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Running on http://localhost:${PORT}`);
+// ----------------------------
+// BULK PREVIEW
+// ----------------------------
+app.post("/bulk-preview", async (req, res) => {
+  const { items } = req.body;
+
+  try {
+    const results = await Promise.all(items.map(async (barcode) => {
+
+      const data = await fetch(
+        `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
+      ).then(r => r.json());
+
+      const top = (data.results || []).slice(0, 5);
+
+      const options = await Promise.all(
+        top.map(async (r) => {
+          const full = await fetchRelease(r.id);
+          if (!full) return null;
+
+          return {
+            id: full.id,
+            title: full.title,
+            year: full.year,
+            country: full.country,
+            thumb: full.image,
+            color: full.color
+          };
+        })
+      );
+
+      return {
+        barcode,
+        options: options.filter(Boolean)
+      };
+    }));
+
+    res.json({ results });
+
+  } catch (err) {
+    console.log("bulk error:", err.message);
+    res.json({ results: [] });
+  }
+});
+
+// ----------------------------
+// IMPORT
+// ----------------------------
+app.post("/import", (req, res) => {
+  const items = req.body.items || [];
+
+  let duplicates = [];
+  let added = [];
+
+  items.forEach(i => {
+    if (inventory.has(i.id)) {
+      duplicates.push(i.id);
+    } else {
+      inventory.add(i.id);
+      queue.push(i);
+      added.push(i.id);
+    }
+  });
+
+  res.json({ success: true, duplicates, added });
+});
+
+// ----------------------------
+// PROCESS QUEUE
+// ----------------------------
+async function processQueue() {
+  if (!queue.length) return;
+
+  const job = queue.shift();
+
+  const data = await fetchRelease(job.id);
+  if (!data) return;
+
+  const multiplier = conditionMultiplier[job.condition] || 1;
+
+  let price = data.basePrice * multiplier;
+  if (price < 8) price = 8;
+
+  const item = {
+    ...data,
+    condition: job.condition,
+    price: price.toFixed(2)
+  };
+
+  history.push(item);
+
+  await createShopifyProduct(item);
+
+  console.log("📦 Added:", item.title, "|", item.color, "|", item.condition);
+}
+
+setInterval(processQueue, 1000);
+
+// ----------------------------
+// HISTORY
+// ----------------------------
+app.get("/history", (req, res) => {
+  res.json({ history });
+});
+
+// ----------------------------
+app.listen(process.env.PORT || 10000, () => {
+  console.log("🚀 POS RUNNING");
 });
