@@ -11,12 +11,42 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+// ----------------------------
+// CLEAN TITLE
+// ----------------------------
+function cleanTitle(artist, rawTitle){
+  if (!rawTitle) return artist;
+
+  // remove duplicated artist if present
+  let title = rawTitle.replace(artist + " - ", "");
+
+  const parts = title.split(" - ");
+
+  if (parts.length > 1) {
+    return artist + " - " + parts[0] + ": " + parts.slice(1).join(" - ");
+  }
+
+  return artist + " - " + title;
+}
+
+// ----------------------------
+// COLOR DETECTION
+// ----------------------------
 function detectColorFromFormats(formats = []) {
   const text = JSON.stringify(formats).toLowerCase();
-  const colors = ["red","blue","green","yellow","orange","purple","pink","white","clear","gold","silver","smoke","marble","splatter"];
+
+  const colors = [
+    "red","blue","green","yellow","orange","purple",
+    "pink","white","clear","gold","silver",
+    "smoke","marble","splatter"
+  ];
 
   const found = colors.filter(c => text.includes(c));
-  if (found.length) return found.map(c => c[0].toUpperCase()+c.slice(1)).join(" / ");
+
+  if (found.length) {
+    return found.map(c => c[0].toUpperCase() + c.slice(1)).join(" / ");
+  }
+
   return "Black";
 }
 
@@ -75,8 +105,13 @@ async function createShopifyProduct(item) {
       },
       body: JSON.stringify({
         product: {
-          title: item.title,
-          body_html: `${item.artist}<br/>${item.color}<br/>${item.condition}`,
+          title: item.title, // CLEAN TITLE USED HERE
+          body_html: `
+            <strong>${item.artist}</strong><br/>
+            ${item.year || ""} ${item.country || ""}<br/>
+            Color: ${item.color}<br/>
+            Condition: ${item.condition}
+          `,
           images: item.image ? [{ src: item.image }] : [],
           variants: [{ price: item.price }]
         }
@@ -84,6 +119,7 @@ async function createShopifyProduct(item) {
     });
 
     const data = await res.json();
+
     if (!res.ok) console.log("❌ Shopify:", data);
     else console.log("✅ Shopify:", data.product?.id);
 
@@ -97,15 +133,19 @@ async function createShopifyProduct(item) {
 // ----------------------------
 async function fetchRelease(id){
   try {
-    const r = await fetch(`https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`).then(r=>r.json());
+    const r = await fetch(
+      `https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`
+    ).then(r=>r.json());
+
     await sleep(150);
 
     const artist = r.artists?.[0]?.name || "Unknown";
+    const rawTitle = r.title || "Unknown Title";
 
     return {
       id,
       artist,
-      title: artist + " - " + r.title,
+      title: cleanTitle(artist, rawTitle), // 🔥 CLEANED HERE
       year: r.year,
       country: r.country,
       image: r.images?.[0]?.uri,
@@ -119,7 +159,7 @@ async function fetchRelease(id){
 }
 
 // ----------------------------
-// BULK START (BACKGROUND)
+// BULK START
 // ----------------------------
 app.post("/bulk-start", async (req,res)=>{
   const { items } = req.body;
@@ -133,13 +173,16 @@ app.post("/bulk-start", async (req,res)=>{
 });
 
 // ----------------------------
-// BULK PROCESSOR
+// BULK PROCESS
 // ----------------------------
 async function processBulk(jobId, items){
   for (let i=0;i<items.length;i++){
     const barcode = items[i];
 
-    const data = await fetch(`https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`).then(r=>r.json());
+    const data = await fetch(
+      `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
+    ).then(r=>r.json());
+
     const top = (data.results||[]).slice(0,5);
 
     let options = [];
@@ -152,7 +195,7 @@ async function processBulk(jobId, items){
     const best = pickBest(options);
 
     if (best){
-      queue.push({ id: best.id, condition: "NM" }); // auto import
+      queue.push({ id: best.id, condition: "NM" });
     }
 
     jobs[jobId].results.push({
@@ -168,7 +211,7 @@ async function processBulk(jobId, items){
 }
 
 // ----------------------------
-// BULK STATUS
+// STATUS
 // ----------------------------
 app.get("/bulk-status/:id", (req,res)=>{
   const job = jobs[req.params.id];
@@ -223,8 +266,6 @@ async function processQueue(){
 setInterval(processQueue,1000);
 
 // ----------------------------
-app.get("/history",(req,res)=>res.json({history}));
-
 app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 PRO POS (BACKGROUND MODE)");
+  console.log("🚀 POS RUNNING (CLEAN TITLES)");
 });
