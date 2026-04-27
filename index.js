@@ -266,6 +266,13 @@ async function processQueue(){
 setInterval(processQueue,1000);
 
 // ----------------------------
+// HISTORY (RESTORE THIS)
+// ----------------------------
+app.get("/history", (req, res) => {
+  res.json({ history });
+});
+
+// ----------------------------
 app.listen(process.env.PORT || 10000, ()=>{
   console.log("🚀 POS RUNNING (CLEAN TITLES)");
 });

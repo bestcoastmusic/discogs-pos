@@ -228,3 +228,36 @@ function stopCamera(){
     stream.getTracks().forEach(t=>t.stop());
   }
 }
+// ----------------------------
+// LIVE HISTORY
+// ----------------------------
+async function loadHistory(){
+  try {
+    const res = await fetch("/history");
+    const data = await res.json();
+
+    const box = document.getElementById("history");
+    if (!box) return;
+
+    box.innerHTML = "<h3>Recent Adds</h3>";
+
+    data.history.slice().reverse().forEach(item => {
+      const div = document.createElement("div");
+      div.className = "card";
+
+      div.innerHTML = `
+        <b>${item.title}</b><br/>
+        $${item.price} • ${item.condition}<br/>
+        <span style="color:#00e676">${item.color}</span>
+      `;
+
+      box.appendChild(div);
+    });
+
+  } catch (err) {
+    console.log("history error", err);
+  }
+}
+
+// AUTO REFRESH EVERY 2 SECONDS
+setInterval(loadHistory, 2000);
