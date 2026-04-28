@@ -1,4 +1,5 @@
 const express = require("express");
+const XLSX = require("xlsx");
 
 const app = express();
 
@@ -18,14 +19,72 @@ let stockMap = {};
 let shopifyMap = {};
 
 // ----------------------------
-// CLEAN
+// SAFE FETCH
 // ----------------------------
-function clean(val){
-  return val?.replace(/"/g,"").trim();
+async function fetchBuffer(url){
+  const res = await fetch(url);
+  return await res.arrayBuffer();
 }
 
 // ----------------------------
-// SAFE FETCH
+// LOAD EXCEL
+// ----------------------------
+async function loadExcel(){
+
+  try {
+    const buffer = await fetchBuffer(process.env.CSV_URL);
+
+    const workbook = XLSX.read(buffer, { type: "buffer" });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
+    const rows = XLSX.utils.sheet_to_json(sheet);
+
+    priceMap = {};
+    stockMap = {};
+
+    rows.forEach(row => {
+
+      const keys = Object.keys(row);
+
+      const upcKey = keys.find(k =>
+        k.toLowerCase().includes("upc") ||
+        k.toLowerCase().includes("barcode")
+      );
+
+      const priceKey = keys.find(k =>
+        k.toLowerCase().includes("price")
+      );
+
+      const stockKey = keys.find(k =>
+        k.toLowerCase().includes("qty") ||
+        k.toLowerCase().includes("stock")
+      );
+
+      if (!upcKey) return;
+
+      const upc = String(row[upcKey]).replace(/\D/g,"");
+      const price = parseFloat(row[priceKey]) || 0;
+      const stock = parseInt(row[stockKey]) || 0;
+
+      if (!upc) return;
+
+      priceMap[upc] = price;
+      stockMap[upc] = stock;
+    });
+
+    console.log("✅ Excel Loaded:", Object.keys(priceMap).length);
+
+  } catch (e){
+    console.log("❌ Excel load failed:", e.message);
+  }
+}
+
+// initial + interval
+loadExcel();
+setInterval(loadExcel, 60000);
+
+// ----------------------------
+// SAFE FETCH JSON
 // ----------------------------
 async function safeFetch(url){
   try {
@@ -40,61 +99,6 @@ async function safeFetch(url){
     return {};
   }
 }
-
-// ----------------------------
-// LOAD CSV FROM URL (SMART)
-// ----------------------------
-async function loadCSV(){
-
-  try {
-    const res = await fetch(process.env.CSV_URL);
-    const text = await res.text();
-
-    const rows = text.split("\n").filter(r => r.trim());
-
-    const headers = rows[0].split(",").map(h => clean(h));
-
-    const upcIndex = headers.findIndex(h =>
-      h.toLowerCase().includes("upc") ||
-      h.toLowerCase().includes("barcode")
-    );
-
-    const priceIndex = headers.findIndex(h =>
-      h.toLowerCase().includes("price")
-    );
-
-    const stockIndex = headers.findIndex(h =>
-      h.toLowerCase().includes("qty") ||
-      h.toLowerCase().includes("stock")
-    );
-
-    priceMap = {};
-    stockMap = {};
-
-    rows.slice(1).forEach(row => {
-
-      const cols = row.split(",");
-
-      const upc = clean(cols[upcIndex])?.replace(/\D/g,"");
-      const price = parseFloat(clean(cols[priceIndex]));
-      const stock = parseInt(clean(cols[stockIndex]));
-
-      if (!upc) return;
-
-      priceMap[upc] = price || 0;
-      stockMap[upc] = stock || 0;
-    });
-
-    console.log("✅ CSV Loaded:", Object.keys(priceMap).length);
-
-  } catch (e){
-    console.log("❌ CSV load failed:", e.message);
-  }
-}
-
-// initial + interval
-loadCSV();
-setInterval(loadCSV, 60000);
 
 // ----------------------------
 // FETCH RELEASE
@@ -248,7 +252,7 @@ async function createShopifyProduct(item){
       product:{
         title: item.title,
         variants:[{
-          price: item.price,
+          price: item.basePrice,
           inventory_quantity: item.stock,
           inventory_management: "shopify"
         }],
@@ -259,8 +263,8 @@ async function createShopifyProduct(item){
 
   const data = await res.json();
 
-  if (data.product){
-    shopifyMap[item.barcode] = data.product.variants[0].inventory_item_id;
+  if (!data.product){
+    console.log("❌ Shopify error:", data);
   }
 }
 
@@ -275,19 +279,11 @@ async function processQueue(){
   const data = await fetchRelease(job.id);
   if (!data) return;
 
-  const price = data.basePrice;
+  history.push(data);
 
-  const item = {
-    ...data,
-    condition: job.condition || "NM",
-    price
-  };
+  await createShopifyProduct(data);
 
-  history.push(item);
-
-  await createShopifyProduct(item);
-
-  console.log("📦 Added:", item.title);
+  console.log("📦 Added:", data.title);
 }
 
 setInterval(processQueue,1000);
@@ -299,5 +295,5 @@ app.get("/history", (req, res) => {
 
 // ----------------------------
 app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 FULL APP + AUTO CSV");
+  console.log("🚀 FULL APP + EXCEL AUTO SYNC");
 });
