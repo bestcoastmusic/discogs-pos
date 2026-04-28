@@ -1,4 +1,4 @@
-console.log("POS FINAL CLEAN");
+console.log("POS STOCK + BULK PRO");
 
 // ----------------------------
 // INIT
@@ -42,6 +42,8 @@ async function scan(){
 // ----------------------------
 // BULK
 // ----------------------------
+let bulkItems = [];
+
 async function startBulk(){
 
   const lines = document.getElementById("bulk").value
@@ -63,8 +65,11 @@ async function startBulk(){
     <div style="background:#333;height:20px;">
       <div id="progressBar" style="height:20px;width:0%;background:#00e676;"></div>
     </div>
+    <button id="addAllBtn" style="margin-top:10px;">Add All Available</button>
     <div id="bulkResults"></div>
   `;
+
+  document.getElementById("addAllBtn").onclick = addAllBulk;
 
   pollBulk(jobId);
 }
@@ -79,8 +84,12 @@ async function pollBulk(jobId){
   const container = document.getElementById("bulkResults");
   container.innerHTML = "";
 
+  bulkItems = [];
+
   data.results.forEach(item=>{
     if (!item.options?.length) return;
+
+    bulkItems.push(item.options[0]); // store best option
     renderCard(item.options, container);
   });
 
@@ -90,7 +99,34 @@ async function pollBulk(jobId){
 }
 
 // ----------------------------
-// CARD (FULL DETAILS RESTORED)
+// ADD ALL BULK
+// ----------------------------
+async function addAllBulk(){
+
+  const items = bulkItems
+    .filter(i => (i.stock ?? 0) > 0)
+    .map(i => ({
+      id: i.id,
+      condition: "NM",
+      barcode: i.barcode
+    }));
+
+  if (!items.length){
+    alert("No items in stock");
+    return;
+  }
+
+  await fetch("/import", {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ items })
+  });
+
+  alert("Added all in-stock items");
+}
+
+// ----------------------------
+// CARD
 // ----------------------------
 function renderCard(options, container){
 
@@ -99,7 +135,12 @@ function renderCard(options, container){
   const card = document.createElement("div");
   card.className = "card";
 
-  // IMAGE + DETAILS
+  const stock = best.stock ?? 0;
+  const price = best.basePrice ?? 0;
+
+  const out = stock <= 0;
+
+  // INFO
   const info = document.createElement("div");
 
   info.innerHTML = `
@@ -107,11 +148,15 @@ function renderCard(options, container){
     <div>
       <b>${best.title}</b><br/>
       ${best.year || ""} • ${best.country || ""}<br/>
-      <span style="color:#00e676">${best.color || "Black"} Vinyl</span>
+      <span style="color:#00e676">${best.color || "Black"} Vinyl</span><br/>
+      <b>$${price}</b> • 
+      <span style="color:${out ? "red" : "#00e676"}">
+        ${out ? "Out of Stock" : stock + " in stock"}
+      </span>
     </div>
   `;
 
-  // VARIANTS
+  // VARIANT SELECT
   const select = document.createElement("select");
 
   options.forEach(opt=>{
@@ -121,7 +166,7 @@ function renderCard(options, container){
 
     o.textContent =
       (opt.id === best.id ? "⭐ " : "") +
-      `${opt.title} (${opt.year || "?"} • ${opt.country || "?"} • ${opt.color || "Black"})`;
+      `${opt.title}`;
 
     select.appendChild(o);
   });
@@ -138,7 +183,8 @@ function renderCard(options, container){
 
   // ADD BUTTON
   const btn = document.createElement("button");
-  btn.textContent = "Add";
+  btn.textContent = out ? "Out of Stock" : "Add";
+  btn.disabled = out;
 
   btn.onclick = async ()=>{
     await fetch("/import", {
