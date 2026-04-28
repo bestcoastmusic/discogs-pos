@@ -14,6 +14,8 @@ const MIN_PRICE = 14.99;
 const LOCATION_ID = 113713512818;
 
 // ----------------------------
+// HELPERS (ALL INCLUDED)
+// ----------------------------
 function clean(str){
   if (!str) return "";
   return str
@@ -25,30 +27,33 @@ function clean(str){
 }
 
 function extractExtras(str){
-  const m = String(str || "").match(/\(.*?\)/g);
-  return m ? m.join(" ") : "";
+  const matches = String(str || "").match(/\(.*?\)/g);
+  return matches ? matches.join(" ") : "";
 }
 
 function calculatePrice(cost){
   if (!cost) return MIN_PRICE;
-  let p = Math.ceil(cost * 1.25) - 0.01;
-  if (p < MIN_PRICE) p = MIN_PRICE;
-  return p.toFixed(2);
+  let price = Math.ceil(cost * 1.25) - 0.01;
+  if (price < MIN_PRICE) price = MIN_PRICE;
+  return price.toFixed(2);
 }
 
+// ----------------------------
+// LOAD EXCEL
 // ----------------------------
 async function loadExcel(){
   try {
     const res = await fetch(process.env.CSV_URL);
     const buffer = await res.arrayBuffer();
 
-    const wb = XLSX.read(buffer, { type: "buffer" });
-    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const workbook = XLSX.read(buffer, { type: "buffer" });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet);
 
     dataMap = {};
 
     rows.forEach(row => {
+
       const raw = row["Description"];
       const key = clean(raw);
 
@@ -73,6 +78,8 @@ loadExcel();
 setInterval(loadExcel, 60000);
 
 // ----------------------------
+// MATCH
+// ----------------------------
 function findMatch(title){
   return dataMap[clean(title)] || null;
 }
@@ -80,9 +87,9 @@ function findMatch(title){
 // ----------------------------
 async function safeFetch(url){
   try {
-    const r = await fetch(url);
-    const t = await r.text();
-    return JSON.parse(t);
+    const res = await fetch(url);
+    const text = await res.text();
+    return JSON.parse(text);
   } catch {
     return {};
   }
@@ -98,12 +105,12 @@ async function fetchRelease(id){
   const artist = r.artists?.[0]?.name || "";
   const title = r.title || "";
 
-  const full = `${artist} - ${title}`;
-  const match = findMatch(full) || {};
+  const fullTitle = `${artist} - ${title}`;
+  const match = findMatch(fullTitle) || {};
 
   return {
     id,
-    title: full,
+    title: fullTitle,
     description: match.extras || "",
     image: r.images?.[0]?.uri || "",
     basePrice: calculatePrice(match.cost),
@@ -113,7 +120,10 @@ async function fetchRelease(id){
 }
 
 // ----------------------------
+// SEARCH
+// ----------------------------
 app.post("/search", async (req,res)=>{
+
   const { barcode } = req.body;
 
   const data = await safeFetch(
@@ -121,6 +131,7 @@ app.post("/search", async (req,res)=>{
   );
 
   const results = (data.results||[]).slice(0,5);
+
   const out = [];
 
   for (const r of results){
@@ -130,6 +141,8 @@ app.post("/search", async (req,res)=>{
   res.json({ results: out });
 });
 
+// ----------------------------
+// BULK
 // ----------------------------
 app.post("/bulk-start",(req,res)=>{
   const { items } = req.body;
@@ -143,6 +156,7 @@ app.post("/bulk-start",(req,res)=>{
 });
 
 async function processBulk(id, items){
+
   for (let i=0;i<items.length;i++){
 
     const barcode = items[i];
@@ -182,6 +196,8 @@ app.get("/bulk-status/:id",(req,res)=>{
 });
 
 // ----------------------------
+// SHOPIFY
+// ----------------------------
 async function upsertProduct(item){
 
   const store = process.env.SHOPIFY_STORE;
@@ -194,9 +210,9 @@ async function upsertProduct(item){
 
   const data = await res.json();
 
-  const existing = data.products.find(p => p.title === item.title);
-
   let variant;
+
+  const existing = data.products.find(p => p.title === item.title);
 
   if (existing){
     variant = existing.variants[0];
@@ -270,6 +286,7 @@ app.post("/import",(req,res)=>{
 
 // ----------------------------
 async function processQueue(){
+
   if (!queue.length) return;
 
   const job = queue.shift();
@@ -289,5 +306,5 @@ app.get("/history",(req,res)=>{
 
 // ----------------------------
 app.listen(process.env.PORT||10000,()=>{
-  console.log("🚀 SYNTAX FIX BUILD (INVENTORY FIX INCLUDED)");
+  console.log("🚀 FINAL CLEAN BUILD (NO MISSING FUNCTIONS)");
 });
