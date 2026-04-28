@@ -174,13 +174,15 @@ async function upsertProduct(item){
           product_type: item.genre,
           tags: `${item.genre}, ${item.color}`,
           variants:[{
-            price: item.basePrice,
-            inventory_management: "shopify"
-          }]
-        }
-      })
-    }
-  );
+  	    price: item.basePrice,
+  	    inventory_management: "shopify",
+  	    inventory_policy: "deny",
+  	    tracked: true
+    }]
+  }
+})
+  }
+);
 
   const created = await r.json();
 
