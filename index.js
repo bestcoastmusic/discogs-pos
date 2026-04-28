@@ -34,11 +34,14 @@ const HISTORY_LIMIT = 60;
 const SHOPIFY_API_VERSION = "2024-01";
 const SHOPIFY_REQUEST_DELAY_MS = 550;
 const DISCOGS_REQUEST_DELAY_MS = 250;
+const DISCOGS_FETCH_GAP_MS = 900;
+const DISCOGS_BULK_OPTION_LIMIT = 3;
 const VARIANT_CACHE_TTL_MS = 60000;
 let shopifyVariantCache = {
   fetchedAt: 0,
   variants: []
 };
+let lastDiscogsRequestAt = 0;
 
 // ----------------------------
 function normalizeBarcode(val){
@@ -373,12 +376,55 @@ loadHistoryFromDisk();
 
 // ----------------------------
 async function safeFetch(url){
-  try {
-    const res = await fetch(url);
-    return await res.json();
-  } catch {
-    return {};
+  const isDiscogs = String(url).includes("api.discogs.com");
+  const maxAttempts = isDiscogs ? 3 : 1;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1){
+    try {
+      if (isDiscogs){
+        const waitMs = Math.max(0, (lastDiscogsRequestAt + DISCOGS_FETCH_GAP_MS) - Date.now());
+        if (waitMs){
+          await sleep(waitMs);
+        }
+        lastDiscogsRequestAt = Date.now();
+      }
+
+      const res = await fetch(url);
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 429 && isDiscogs && attempt < maxAttempts){
+        const retryAfterSeconds = Number(res.headers.get("retry-after") || 2);
+        const retryWaitMs = Math.max(1500, retryAfterSeconds * 1000);
+        console.log("⏳ Discogs rate limit hit, retrying in", retryWaitMs, "ms");
+        await sleep(retryWaitMs);
+        continue;
+      }
+
+      if (!res.ok){
+        return {
+          __failed: true,
+          __status: res.status,
+          message: data.message || data.error || `Request failed (${res.status})`
+        };
+      }
+
+      return data;
+    } catch (err){
+      if (attempt >= maxAttempts){
+        return {
+          __failed: true,
+          message: err.message || "Request failed"
+        };
+      }
+
+      await sleep(1000 * attempt);
+    }
   }
+
+  return {
+    __failed: true,
+    message: "Request failed"
+  };
 }
 
 async function searchDiscogsByBarcode(barcode){
@@ -388,6 +434,14 @@ async function searchDiscogsByBarcode(barcode){
   const data = await safeFetch(
     `https://api.discogs.com/database/search?barcode=${cleanBarcode}&token=${process.env.DISCOGS_TOKEN}`
   );
+
+  if (data.__failed){
+    throw new Error(
+      data.__status === 429
+        ? "Discogs is rate-limiting bulk lookups right now. Please retry in a moment."
+        : `Discogs search failed: ${data.message}`
+    );
+  }
 
   return (data.results || []).slice(0, 5);
 }
@@ -731,6 +785,11 @@ async function fetchRelease(id, barcode){
     `https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`
   );
 
+  if (r.__failed){
+    console.log("⚠️ DISCOGS RELEASE FETCH FAILED:", id, r.message);
+    return null;
+  }
+
   const artist = r.artists?.[0]?.name || "";
   const title = r.title || "";
   const year = r.year || "";
@@ -797,8 +856,11 @@ async function fetchRelease(id, barcode){
   };
 }
 
-async function buildReleaseOptions(barcode){
-  const results = await searchDiscogsByBarcode(barcode);
+async function buildReleaseOptions(barcode, mode = "single"){
+  const rawResults = await searchDiscogsByBarcode(barcode);
+  const results = mode === "bulk"
+    ? rawResults.slice(0, DISCOGS_BULK_OPTION_LIMIT)
+    : rawResults;
   const options = [];
 
   for (const result of results){
@@ -855,8 +917,16 @@ async function buildReleaseOptions(barcode){
 // ----------------------------
 app.post("/search", async (req,res)=>{
   const { barcode } = req.body;
-  const results = await buildReleaseOptions(barcode);
-  res.json({ results });
+  try {
+    const results = await buildReleaseOptions(barcode, "single");
+    res.json({ results });
+  } catch (err){
+    console.log("❌ SEARCH ERROR:", err.message);
+    res.status(200).json({
+      results: [],
+      error: err.message
+    });
+  }
 });
 
 app.post("/bulk-start",(req,res)=>{
@@ -904,7 +974,7 @@ async function processBulkJob(jobId, items){
 
   for (const barcode of items){
     try {
-      const options = await buildReleaseOptions(barcode);
+      const options = await buildReleaseOptions(barcode, "bulk");
 
       job.results.push({
         barcode,
