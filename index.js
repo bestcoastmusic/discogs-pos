@@ -59,26 +59,57 @@ const conditionMultiplier = {
 // ----------------------------
 async function fetchRelease(id){
   try {
-    const r = await fetch(`https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`).then(r=>r.json());
+    const r = await fetch(`https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`)
+      .then(r=>r.json());
 
     const artist = r.artists?.[0]?.name || "Unknown";
     const title = r.title || "Unknown";
 
-    const barcode = r.identifiers?.find(i => i.type === "Barcode")?.value?.replace(/\D/g, "");
+    // ✅ YEAR + COUNTRY
+    const year = r.year || null;
+    const country = r.country || null;
 
+    // ✅ IMAGE
+    const image = r.images?.[0]?.uri || "";
+
+    // ✅ BARCODE (cleaned)
+    const barcode = r.identifiers
+      ?.find(i => i.type === "Barcode")
+      ?.value?.replace(/\D/g, "");
+
+    // ✅ COLOR DETECTION (FIXED)
+    const formatText = JSON.stringify(r.formats || []).toLowerCase();
+
+    const colors = [
+      "red","blue","green","yellow","orange",
+      "purple","pink","white","clear","gold",
+      "silver","smoke","marble","splatter"
+    ];
+
+    const foundColors = colors.filter(c => formatText.includes(c));
+
+    const color = foundColors.length
+      ? foundColors.map(c => c[0].toUpperCase() + c.slice(1)).join(" / ")
+      : "Black";
+
+    // ✅ PRICE + STOCK
     let basePrice = priceMap[barcode] || 20;
     let stock = stockMap[barcode] ?? 0;
 
     return {
       id,
       title: `${artist} - ${title}`,
-      image: r.images?.[0]?.uri,
+      year,
+      country,
+      image,
       barcode,
+      color,
       basePrice,
       stock
     };
 
-  } catch {
+  } catch (e) {
+    console.log("Fetch error:", e.message);
     return null;
   }
 }
