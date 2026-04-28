@@ -56,9 +56,24 @@ function calculatePrice(cost){
 }
 
 // ----------------------------
+// ✅ FIXED + RELIABLE EXCEL LOADER
 async function loadExcel(){
+  console.log("🔄 Loading Excel...");
+
   try {
+
+    if (!process.env.CSV_URL){
+      console.log("❌ CSV_URL is missing");
+      return;
+    }
+
     const res = await fetch(process.env.CSV_URL);
+
+    if (!res.ok){
+      console.log("❌ Excel fetch failed:", res.status);
+      return;
+    }
+
     const buffer = await res.arrayBuffer();
 
     const wb = XLSX.read(buffer, { type: "buffer" });
@@ -68,12 +83,16 @@ async function loadExcel(){
     dataMap = {};
 
     rows.forEach(row => {
-      const barcode = normalizeBarcode(row["UPC"]);
+
+      const barcode = normalizeBarcode(
+        row["UPC"] || row["Barcode"] || row["UPCA"]
+      );
+
       if (!barcode) return;
 
       dataMap[barcode] = {
         cost: parseFloat(row["Price"]) || 0,
-        stock: parseInt(row["QtyInStock"]) || 0,
+        stock: parseInt(row["QtyInStock"] || row["Qty"] || 0),
         extras: extractExtras(row["Description"]),
         genre: simplifyGenre(row["Genre"]),
         color: detectColor(row["Description"])
@@ -125,7 +144,6 @@ async function fetchRelease(id, barcode){
 }
 
 // ----------------------------
-// ✅ SEARCH (FIXES SCAN BUTTON)
 app.post("/search", async (req,res)=>{
   const { barcode } = req.body;
 
@@ -144,7 +162,6 @@ app.post("/search", async (req,res)=>{
 });
 
 // ----------------------------
-// ✅ BULK START
 app.post("/bulk-start",(req,res)=>{
   const { items } = req.body;
 
@@ -156,7 +173,6 @@ app.post("/bulk-start",(req,res)=>{
   res.json({ jobId: id });
 });
 
-// ----------------------------
 async function processBulk(id, items){
   for (let i=0;i<items.length;i++){
 
@@ -185,8 +201,6 @@ async function processBulk(id, items){
   }
 }
 
-// ----------------------------
-// ✅ BULK STATUS
 app.get("/bulk-status/:id",(req,res)=>{
   const job = jobs[req.params.id];
   if (!job) return res.json({ progress:0, results:[] });
@@ -295,5 +309,5 @@ app.get("/history",(req,res)=>{
 
 // ----------------------------
 app.listen(process.env.PORT||10000,()=>{
-  console.log("🚀 FINAL STABLE BUILD (ALL ROUTES RESTORED)");
+  console.log("🚀 FINAL STABLE BUILD (EXCEL FIXED)");
 });
