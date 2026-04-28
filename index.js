@@ -1,5 +1,8 @@
 const express = require("express");
+const fs = require("fs");
+const path = require("path");
 const XLSX = require("xlsx");
+require("dotenv").config();
 
 const app = express();
 app.use(express.json());
@@ -12,19 +15,43 @@ let dataMap = {};
 
 const MIN_PRICE = 14.99;
 const LOCATION_ID = 113713512818;
+const LOCAL_PRICING_FILE = path.join(__dirname, "pricing.csv");
 
 // ----------------------------
 function normalizeBarcode(val){
   return String(val || "").replace(/\D/g, "");
 }
 
-function findMatch(barcode){
+function getBarcodeCandidates(barcode){
   const clean = normalizeBarcode(barcode);
-  for (const key in dataMap){
-    if (key.endsWith(clean) || clean.endsWith(key)){
-      return dataMap[key];
+  const trimmed = clean.replace(/^0+/, "");
+  return [...new Set([clean, trimmed].filter(Boolean))];
+}
+
+function findMatch(barcode){
+  const candidates = getBarcodeCandidates(barcode);
+  if (!candidates.length) return null;
+
+  for (const candidate of candidates){
+    if (dataMap[candidate]) return dataMap[candidate];
+  }
+
+  for (const [key, value] of Object.entries(dataMap)){
+    const keyCandidates = getBarcodeCandidates(key);
+
+    if (keyCandidates.some(keyCandidate =>
+      candidates.some(candidate =>
+        keyCandidate === candidate ||
+        keyCandidate.includes(candidate) ||
+        candidate.includes(keyCandidate) ||
+        keyCandidate.endsWith(candidate) ||
+        candidate.endsWith(keyCandidate)
+      )
+    )){
+      return value;
     }
   }
+
   return null;
 }
 
@@ -57,19 +84,26 @@ function calculatePrice(cost){
 async function loadExcel(){
   console.log("🔄 Loading Excel...");
   try {
-    if (!process.env.CSV_URL){
-      console.log("❌ CSV_URL missing");
+    let wb;
+
+    if (process.env.CSV_URL){
+      const res = await fetch(process.env.CSV_URL);
+      if (!res.ok){
+        console.log("❌ Excel fetch failed:", res.status);
+        return;
+      }
+
+      const buffer = await res.arrayBuffer();
+      wb = XLSX.read(buffer, { type: "buffer" });
+      console.log("🌐 Loaded spreadsheet from CSV_URL");
+    } else if (fs.existsSync(LOCAL_PRICING_FILE)) {
+      wb = XLSX.readFile(LOCAL_PRICING_FILE);
+      console.log("📄 Loaded local pricing.csv");
+    } else {
+      console.log("❌ CSV_URL missing and pricing.csv not found");
       return;
     }
 
-    const res = await fetch(process.env.CSV_URL);
-    if (!res.ok){
-      console.log("❌ Excel fetch failed:", res.status);
-      return;
-    }
-
-    const buffer = await res.arrayBuffer();
-    const wb = XLSX.read(buffer, { type: "buffer" });
     const sheet = wb.Sheets[wb.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet);
 
@@ -119,17 +153,21 @@ async function fetchRelease(id, barcode){
   const artist = r.artists?.[0]?.name || "";
   const title = r.title || "";
 
-  const match = findMatch(barcode) || {};
+  const match = findMatch(barcode);
+
+  if (!match){
+    console.log("⚠️ NO EXCEL MATCH:", normalizeBarcode(barcode));
+  }
 
   return {
     id,
     title: `${artist} - ${title}`,
-    description: match.extras || "",
+    description: match?.extras || "",
     image: r.images?.[0]?.uri || "",
-    basePrice: calculatePrice(match.cost),
-    stock: match.stock || 0,
-    genre: match.genre || "Other",
-    color: match.color || "black"
+    basePrice: calculatePrice(match?.cost),
+    stock: match?.stock ?? 0,
+    genre: match?.genre || "Other",
+    color: match?.color || "black"
   };
 }
 
