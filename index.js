@@ -21,6 +21,7 @@ let genreMap = {};
 // SETTINGS
 // ----------------------------
 const MIN_PRICE = 14.99;
+const LOCATION_ID = 113713512818; // DROPSHIP
 
 // ----------------------------
 // HELPERS
@@ -83,7 +84,7 @@ async function loadExcel(){
       }
     });
 
-    console.log("✅ Excel Loaded");
+    console.log("✅ Excel Loaded:", Object.keys(priceMap).length);
 
   } catch (e){
     console.log("❌ Excel load failed:", e.message);
@@ -119,6 +120,8 @@ async function fetchRelease(id){
   const barcodeRaw = r.identifiers?.find(i => i.type === "Barcode")?.value;
   const barcode = normalizeUPC(barcodeRaw);
 
+  const year = r.year || "";
+  const country = r.country || "";
   const image = r.images?.[0]?.uri || "";
 
   const cost = priceMap[barcode] || 0;
@@ -128,6 +131,8 @@ async function fetchRelease(id){
   return {
     id,
     title: `${artist} - ${title}`,
+    year,
+    country,
     image,
     barcode,
     basePrice: calculatePrice(cost),
@@ -137,7 +142,7 @@ async function fetchRelease(id){
 }
 
 // ----------------------------
-// SEARCH (FIXED)
+// SEARCH
 // ----------------------------
 app.post("/search", async (req, res) => {
 
@@ -160,7 +165,7 @@ app.post("/search", async (req, res) => {
 });
 
 // ----------------------------
-// BULK (FIXED)
+// BULK
 // ----------------------------
 app.post("/bulk-start", (req,res)=>{
   const { items } = req.body;
@@ -215,9 +220,9 @@ app.get("/bulk-status/:id", (req,res)=>{
 });
 
 // ----------------------------
-// FIND EXISTING PRODUCT
+// UPSERT PRODUCT (FINAL)
 // ----------------------------
-async function findProductByBarcode(barcode){
+async function upsertProduct(item){
 
   const store = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_TOKEN;
@@ -233,25 +238,15 @@ async function findProductByBarcode(barcode){
 
   const data = await res.json();
 
-  return data.products.find(p =>
-    p.variants?.some(v => v.barcode === barcode)
+  const existing = data.products.find(p =>
+    p.variants?.some(v => v.barcode === item.barcode)
   );
-}
-
-// ----------------------------
-// UPSERT PRODUCT
-// ----------------------------
-async function upsertProduct(item){
-
-  const store = process.env.SHOPIFY_STORE;
-  const token = process.env.SHOPIFY_TOKEN;
-
-  const existing = await findProductByBarcode(item.barcode);
 
   if (existing){
 
     const variant = existing.variants[0];
 
+    // update price
     await fetch(`https://${store}/admin/api/2024-01/variants/${variant.id}.json`, {
       method:"PUT",
       headers:{
@@ -261,9 +256,22 @@ async function upsertProduct(item){
       body: JSON.stringify({
         variant:{
           id: variant.id,
-          price: item.basePrice,
-          inventory_quantity: item.stock
+          price: item.basePrice
         }
+      })
+    });
+
+    // update inventory at dropship
+    await fetch(`https://${store}/admin/api/2024-01/inventory_levels/set.json`, {
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "X-Shopify-Access-Token": token
+      },
+      body: JSON.stringify({
+        location_id: LOCATION_ID,
+        inventory_item_id: variant.inventory_item_id,
+        available: item.stock
       })
     });
 
@@ -271,7 +279,7 @@ async function upsertProduct(item){
 
   } else {
 
-    await fetch(`https://${store}/admin/api/2024-01/products.json`, {
+    const createRes = await fetch(`https://${store}/admin/api/2024-01/products.json`, {
       method:"POST",
       headers:{
         "Content-Type":"application/json",
@@ -284,7 +292,6 @@ async function upsertProduct(item){
           tags: item.genre,
           variants:[{
             price: item.basePrice,
-            inventory_quantity: item.stock,
             barcode: item.barcode,
             inventory_management:"shopify"
           }],
@@ -293,12 +300,29 @@ async function upsertProduct(item){
       })
     });
 
-    console.log("📦 Created:", item.title);
+    const created = await createRes.json();
+    const variant = created.product.variants[0];
+
+    // set inventory at dropship
+    await fetch(`https://${store}/admin/api/2024-01/inventory_levels/set.json`, {
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "X-Shopify-Access-Token": token
+      },
+      body: JSON.stringify({
+        location_id: LOCATION_ID,
+        inventory_item_id: variant.inventory_item_id,
+        available: item.stock
+      })
+    });
+
+    console.log("📦 Created (Dropship):", item.title);
   }
 }
 
 // ----------------------------
-// IMPORT (BUTTON FIX)
+// IMPORT
 // ----------------------------
 app.post("/import",(req,res)=>{
   const items = req.body.items || [];
@@ -330,5 +354,5 @@ app.get("/history",(req,res)=>{
 
 // ----------------------------
 app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 FINAL STABLE BUILD");
+  console.log("🚀 EVERYTHING FIXED FINAL BUILD");
 });
