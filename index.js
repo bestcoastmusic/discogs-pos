@@ -30,6 +30,7 @@ const LOCATION_ID = Number(process.env.SHOPIFY_LOCATION_ID || DEFAULT_LOCATION_I
 const LOCAL_PRICING_FILE = path.join(__dirname, "pricing.csv");
 const SHOPIFY_API_VERSION = "2024-01";
 const SHOPIFY_REQUEST_DELAY_MS = 550;
+const DISCOGS_REQUEST_DELAY_MS = 250;
 
 // ----------------------------
 function normalizeBarcode(val){
@@ -78,6 +79,64 @@ function buildInventorySignature(sourceMap = dataMap){
 
 function sleep(ms){
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function escapeHtml(val){
+  return String(val || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function normalizeTextBlock(val){
+  return String(val || "")
+    .replace(/\r/g, "")
+    .split("\n")
+    .map(line => line.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function formatDiscogsFormat(formats){
+  return (formats || [])
+    .map(format =>
+      [format.name, ...(format.descriptions || [])]
+        .filter(Boolean)
+        .join(" / ")
+    )
+    .filter(Boolean)
+    .join(" • ");
+}
+
+function buildDiscogsDescription({ year, country, label, format, extras, notes }){
+  const blocks = [];
+  const meta = [year, country, label, format].filter(Boolean).join(" • ");
+  const cleanExtras = normalizeTextBlock(extras);
+  const cleanNotes = normalizeTextBlock(notes);
+
+  if (meta) blocks.push(`<p>${escapeHtml(meta)}</p>`);
+  if (cleanExtras) blocks.push(`<p>${escapeHtml(cleanExtras)}</p>`);
+
+  cleanNotes
+    .split("\n")
+    .filter(Boolean)
+    .slice(0, 6)
+    .forEach(line => {
+      blocks.push(`<p>${escapeHtml(line)}</p>`);
+    });
+
+  return blocks.join("");
+}
+
+function buildDescriptionText({ year, country, label, format, extras, notes }){
+  const noteLine = normalizeTextBlock(notes).replace(/\n+/g, " ").trim();
+  const extrasLine = normalizeTextBlock(extras).replace(/\n+/g, " ").trim();
+
+  return noteLine ||
+    extrasLine ||
+    [year, country, label, format].filter(Boolean).join(" • ");
 }
 
 function extractExtras(str){
@@ -176,6 +235,17 @@ async function safeFetch(url){
   } catch {
     return {};
   }
+}
+
+async function searchDiscogsByBarcode(barcode){
+  const cleanBarcode = normalizeBarcode(barcode);
+  if (!cleanBarcode) return [];
+
+  const data = await safeFetch(
+    `https://api.discogs.com/database/search?barcode=${cleanBarcode}&token=${process.env.DISCOGS_TOKEN}`
+  );
+
+  return (data.results || []).slice(0, 5);
 }
 
 async function shopifyRequest(pathOrUrl, options = {}){
@@ -412,11 +482,31 @@ async function fetchRelease(id, barcode){
 
   const artist = r.artists?.[0]?.name || "";
   const title = r.title || "";
+  const year = r.year || "";
+  const country = r.country || "";
+  const label = r.labels?.[0]?.name || "";
+  const format = formatDiscogsFormat(r.formats);
   const releaseBarcode = normalizeBarcode(
     r.identifiers?.find(i => String(i.type || "").toLowerCase().includes("barcode"))?.value
   );
   const resolvedBarcode = normalizeBarcode(barcode) || releaseBarcode;
   const match = findMatch(resolvedBarcode);
+  const description = buildDiscogsDescription({
+    year,
+    country,
+    label,
+    format,
+    extras: match?.extras,
+    notes: r.notes
+  });
+  const descriptionText = buildDescriptionText({
+    year,
+    country,
+    label,
+    format,
+    extras: match?.extras,
+    notes: r.notes
+  });
 
   if (!match){
     console.log("⚠️ NO EXCEL MATCH:", resolvedBarcode);
@@ -426,32 +516,112 @@ async function fetchRelease(id, barcode){
     id,
     barcode: resolvedBarcode,
     title: `${artist} - ${title}`,
-    description: match?.extras || "",
+    description,
+    descriptionText,
     image: r.images?.[0]?.uri || "",
     basePrice: calculatePrice(match?.cost),
     stock: match?.stock ?? 0,
+    year,
+    country,
+    label,
+    format,
     genre: match?.genre || "Other",
     color: match?.color || "black"
   };
 }
 
+async function buildReleaseOptions(barcode){
+  const results = await searchDiscogsByBarcode(barcode);
+  const options = [];
+
+  for (const result of results){
+    const full = await fetchRelease(result.id, barcode);
+    if (full) options.push(full);
+  }
+
+  return options;
+}
+
 // ----------------------------
 app.post("/search", async (req,res)=>{
   const { barcode } = req.body;
+  const results = await buildReleaseOptions(barcode);
+  res.json({ results });
+});
 
-  const data = await safeFetch(
-    `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
-  );
+app.post("/bulk-start",(req,res)=>{
+  const items = (req.body.items || [])
+    .map(item => normalizeBarcode(item))
+    .filter(Boolean);
 
-  const results = (data.results||[]).slice(0,5);
+  const jobId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  jobs[jobId] = {
+    total: items.length,
+    done: 0,
+    progress: 0,
+    results: [],
+    startedAt: new Date().toISOString(),
+    finishedAt: null
+  };
 
-  const out = [];
-  for (const r of results){
-    out.push(await fetchRelease(r.id, barcode));
+  void processBulkJob(jobId, items);
+
+  res.json({ jobId });
+});
+
+app.get("/bulk-status/:id",(req,res)=>{
+  const job = jobs[req.params.id];
+  if (!job){
+    return res.status(404).json({
+      error: "Bulk job not found",
+      progress: 0,
+      results: []
+    });
   }
 
-  res.json({ results: out });
+  res.json({
+    progress: job.progress,
+    total: job.total,
+    done: job.done,
+    results: job.results,
+    finishedAt: job.finishedAt
+  });
 });
+
+async function processBulkJob(jobId, items){
+  const job = jobs[jobId];
+  if (!job) return;
+
+  for (const barcode of items){
+    try {
+      const options = await buildReleaseOptions(barcode);
+
+      job.results.push({
+        barcode,
+        options,
+        best: options[0] || null,
+        error: options.length ? null : "No Discogs match found"
+      });
+    } catch (err){
+      job.results.push({
+        barcode,
+        options: [],
+        best: null,
+        error: err.message
+      });
+    }
+
+    job.done += 1;
+    job.progress = job.total
+      ? Math.floor((job.done / job.total) * 100)
+      : 100;
+
+    await sleep(DISCOGS_REQUEST_DELAY_MS);
+  }
+
+  job.finishedAt = new Date().toISOString();
+  job.progress = 100;
+}
 
 // ----------------------------
 async function upsertProduct(item){
@@ -546,7 +716,11 @@ async function upsertProduct(item){
 // ----------------------------
 app.post("/import",(req,res)=>{
   (req.body.items || []).forEach(i=>{
-    queue.push({ id:i.id, barcode:i.barcode });
+    queue.push({
+      id:i.id,
+      barcode:i.barcode,
+      condition: i.condition || "NM"
+    });
   });
   res.json({ success:true });
 });
@@ -569,6 +743,9 @@ async function processQueue(){
 
   const job = queue.shift();
   const data = await fetchRelease(job.id, job.barcode);
+  if (!data) return;
+
+  data.condition = job.condition || "NM";
 
   history.push(data);
   await upsertProduct(data);
