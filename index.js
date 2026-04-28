@@ -14,16 +14,12 @@ const MIN_PRICE = 14.99;
 const LOCATION_ID = 113713512818;
 
 // ----------------------------
-// HELPERS (ALL INCLUDED)
+// HELPERS
 // ----------------------------
-function clean(str){
-  if (!str) return "";
-  return str
-    .replace(/\(.*?\)/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9\s\-]/g,"")
-    .replace(/\s+/g," ")
-    .trim();
+function normalizeBarcode(val){
+  return String(val || "")
+    .replace(/\D/g, "")
+    .replace(/^0+/, "");
 }
 
 function extractExtras(str){
@@ -39,7 +35,7 @@ function calculatePrice(cost){
 }
 
 // ----------------------------
-// LOAD EXCEL
+// LOAD EXCEL (BARCODE BASED)
 // ----------------------------
 async function loadExcel(){
   try {
@@ -54,15 +50,16 @@ async function loadExcel(){
 
     rows.forEach(row => {
 
-      const raw = row["Description"];
-      const key = clean(raw);
+      const barcode = normalizeBarcode(
+        row["UPC"] || row["Barcode"] || row["EAN"] || row["Code"]
+      );
 
-      if (!key) return;
+      if (!barcode) return;
 
-      dataMap[key] = {
+      dataMap[barcode] = {
         cost: parseFloat(row["Price"]) || 0,
         stock: parseInt(row["QtyInStock"]) || 0,
-        extras: extractExtras(raw),
+        extras: extractExtras(row["Description"]),
         genre: row["Genre"] || "Other"
       };
     });
@@ -78,10 +75,10 @@ loadExcel();
 setInterval(loadExcel, 60000);
 
 // ----------------------------
-// MATCH
+// MATCH (BARCODE)
 // ----------------------------
-function findMatch(title){
-  return dataMap[clean(title)] || null;
+function findMatch(barcode){
+  return dataMap[normalizeBarcode(barcode)] || null;
 }
 
 // ----------------------------
@@ -106,7 +103,13 @@ async function fetchRelease(id){
   const title = r.title || "";
 
   const fullTitle = `${artist} - ${title}`;
-  const match = findMatch(fullTitle) || {};
+
+  const barcodeRaw =
+    r.identifiers?.find(i => i.type === "Barcode")?.value || "";
+
+  const barcode = normalizeBarcode(barcodeRaw);
+
+  const match = findMatch(barcode) || {};
 
   return {
     id,
@@ -245,7 +248,7 @@ async function upsertProduct(item){
     variant = created.product.variants[0];
   }
 
-  // 🔥 CONNECT + SET INVENTORY
+  // CONNECT INVENTORY
   await fetch(
     `https://${store}/admin/api/2024-01/inventory_levels/connect.json`,
     {
@@ -261,6 +264,7 @@ async function upsertProduct(item){
     }
   );
 
+  // SET INVENTORY
   await fetch(
     `https://${store}/admin/api/2024-01/inventory_levels/set.json`,
     {
@@ -306,5 +310,5 @@ app.get("/history",(req,res)=>{
 
 // ----------------------------
 app.listen(process.env.PORT||10000,()=>{
-  console.log("🚀 FINAL CLEAN BUILD (NO MISSING FUNCTIONS)");
+  console.log("🚀 BARCODE SYSTEM LIVE (FINAL)");
 });
