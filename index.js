@@ -2,7 +2,6 @@ const express = require("express");
 const XLSX = require("xlsx");
 
 const app = express();
-
 app.use(express.json());
 app.use(express.static("public"));
 
@@ -10,30 +9,38 @@ app.use(express.static("public"));
 let queue = [];
 let history = [];
 let jobs = {};
-
 let dataMap = {};
 
 const MIN_PRICE = 14.99;
 const LOCATION_ID = 113713512818;
 
 // ----------------------------
-// CLEAN / MATCH HELPERS
+// HELPERS (ALL INCLUDED NOW)
 // ----------------------------
 function clean(str){
-
   if (!str) return "";
 
-  // remove everything in parentheses
-  let base = str.replace(/\(.*?\)/g, "");
-
-  // normalize
-  base = base
+  return str
+    .replace(/\(.*?\)/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9\s\-]/g,"")
     .replace(/\s+/g," ")
     .trim();
+}
 
-  return base;
+function extractExtras(str){
+  const matches = String(str || "").match(/\(.*?\)/g);
+  return matches ? matches.join(" ") : "";
+}
+
+function calculatePrice(cost){
+  if (!cost) return MIN_PRICE;
+
+  let price = Math.ceil(cost * 1.25) - 0.01;
+
+  if (price < MIN_PRICE) price = MIN_PRICE;
+
+  return price.toFixed(2);
 }
 
 // ----------------------------
@@ -51,19 +58,17 @@ async function loadExcel(){
     dataMap = {};
 
     rows.forEach(row => {
-      const rawTitle = row["Description"];
-      const cleanTitle = clean(rawTitle);
 
-      if (!cleanTitle) return;
+      const raw = row["Description"];
+      const key = clean(raw);
 
-      const extras = extractExtras(rawTitle);
+      if (!key) return;
 
-      dataMap[cleanTitle] = {
+      dataMap[key] = {
         cost: parseFloat(row["Price"]) || 0,
         stock: parseInt(row["QtyInStock"]) || 0,
-        genre: simplifyGenre(row["Genre"]),
-        extras,
-        color: detectColor(extras)
+        extras: extractExtras(raw),
+        genre: row["Genre"] || "Other"
       };
     });
 
@@ -78,29 +83,18 @@ loadExcel();
 setInterval(loadExcel, 60000);
 
 // ----------------------------
-// MATCHING (FIXED)
+// MATCH (STRICT)
 // ----------------------------
 function findMatch(title){
-
-  const key = clean(title);
-
-  // exact match first (this will now work)
-  if (dataMap[key]) return dataMap[key];
-
-  // fallback: strict contains (not fuzzy guessing)
-  for (const k in dataMap){
-    if (k === key) return dataMap[k];
-  }
-
-  return null;
+  return dataMap[clean(title)] || null;
 }
 
 // ----------------------------
 async function safeFetch(url){
   try {
-    const res = await fetch(url);
-    const text = await res.text();
-    return JSON.parse(text);
+    const r = await fetch(url);
+    const t = await r.text();
+    return JSON.parse(t);
   } catch {
     return {};
   }
@@ -109,36 +103,31 @@ async function safeFetch(url){
 // ----------------------------
 async function fetchRelease(id){
 
-  const r = await safeFetch(`https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`);
+  const r = await safeFetch(
+    `https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`
+  );
 
   const artist = r.artists?.[0]?.name || "";
   const title = r.title || "";
 
-  const fullTitle = `${artist} - ${title}`;
-
-  const match = findMatch(fullTitle) || {};
-
-  const image = r.images?.[0]?.uri || "";
-
-  const formatText = JSON.stringify(r.formats || "").toLowerCase();
-  const discogsColor = detectColor(formatText);
+  const full = `${artist} - ${title}`;
+  const match = findMatch(full) || {};
 
   return {
     id,
-    title: fullTitle,
+    title: full,
     description: match.extras || "",
-    image,
+    image: r.images?.[0]?.uri || "",
     basePrice: calculatePrice(match.cost),
     stock: match.stock || 0,
-    genre: match.genre || "Other",
-    color: match.color !== "Black" ? match.color : discogsColor
+    genre: match.genre || "Other"
   };
 }
 
 // ----------------------------
-// SEARCH (SCAN BUTTON)
+// SEARCH
 // ----------------------------
-app.post("/search", async (req, res) => {
+app.post("/search", async (req,res)=>{
 
   const { barcode } = req.body;
 
@@ -146,35 +135,34 @@ app.post("/search", async (req, res) => {
     `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
   );
 
-  const results = (data.results || []).slice(0, 5);
+  const results = (data.results||[]).slice(0,5);
 
-  const formatted = [];
+  const out = [];
 
-  for (const r of results) {
-    const full = await fetchRelease(r.id);
-    if (full) formatted.push(full);
+  for (const r of results){
+    out.push(await fetchRelease(r.id));
   }
 
-  res.json({ results: formatted });
+  res.json({ results: out });
 });
 
 // ----------------------------
-// BULK (PROGRESS FIXED)
+// BULK
 // ----------------------------
-app.post("/bulk-start", (req,res)=>{
+app.post("/bulk-start",(req,res)=>{
   const { items } = req.body;
 
-  const jobId = Date.now().toString();
-  jobs[jobId] = { total: items.length, done: 0, results: [] };
+  const id = Date.now().toString();
+  jobs[id] = { total: items.length, done: 0, results: [] };
 
-  processBulk(jobId, items);
+  processBulk(id, items);
 
-  res.json({ jobId });
+  res.json({ jobId: id });
 });
 
-async function processBulk(jobId, items){
+async function processBulk(id, items){
 
-  for (let i = 0; i < items.length; i++){
+  for (let i=0;i<items.length;i++){
 
     const barcode = items[i];
 
@@ -182,46 +170,38 @@ async function processBulk(jobId, items){
       `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
     );
 
-    const top = (data.results || []).slice(0,5);
+    const top = (data.results||[]).slice(0,5);
 
-    let options = [];
+    const opts = [];
 
     for (const r of top){
-      const full = await fetchRelease(r.id);
-      if (full) options.push(full);
+      opts.push(await fetchRelease(r.id));
     }
 
-    jobs[jobId].results.push({
+    jobs[id].results.push({
       barcode,
-      options,
-      best: options[0] || null
+      options: opts,
+      best: opts[0] || null
     });
 
-    jobs[jobId].done = i + 1;
+    jobs[id].done = i + 1;
 
-    await new Promise(r => setTimeout(r,120));
+    await new Promise(r=>setTimeout(r,120));
   }
 }
 
-app.get("/bulk-status/:id", (req,res)=>{
+app.get("/bulk-status/:id",(req,res)=>{
   const job = jobs[req.params.id];
-
-  if (!job){
-    return res.json({ progress: 0, results: [] });
-  }
-
-  const progress = job.total
-    ? Math.floor((job.done / job.total) * 100)
-    : 0;
+  if (!job) return res.json({ progress:0, results:[] });
 
   res.json({
-    progress,
+    progress: Math.floor((job.done/job.total)*100),
     results: job.results
   });
 });
 
 // ----------------------------
-// SHOPIFY UPSERT
+// SHOPIFY
 // ----------------------------
 async function upsertProduct(item){
 
@@ -230,9 +210,7 @@ async function upsertProduct(item){
 
   const res = await fetch(
     `https://${store}/admin/api/2024-01/products.json?limit=250`,
-    {
-      headers: { "X-Shopify-Access-Token": token }
-    }
+    { headers:{ "X-Shopify-Access-Token": token } }
   );
 
   const data = await res.json();
@@ -241,110 +219,7 @@ async function upsertProduct(item){
 
   if (existing){
 
-    const variant = existing.variants[0];
+    const v = existing.variants[0];
 
-    await fetch(`https://${store}/admin/api/2024-01/variants/${variant.id}.json`, {
-      method:"PUT",
-      headers:{
-        "Content-Type":"application/json",
-        "X-Shopify-Access-Token": token
-      },
-      body: JSON.stringify({
-        variant:{
-          id: variant.id,
-          price: item.basePrice
-        }
-      })
-    });
-
-    await fetch(`https://${store}/admin/api/2024-01/inventory_levels/set.json`, {
-      method:"POST",
-      headers:{
-        "Content-Type":"application/json",
-        "X-Shopify-Access-Token": token
-      },
-      body: JSON.stringify({
-        location_id: LOCATION_ID,
-        inventory_item_id: variant.inventory_item_id,
-        available: item.stock
-      })
-    });
-
-  } else {
-
-    const createRes = await fetch(`https://${store}/admin/api/2024-01/products.json`, {
-      method:"POST",
-      headers:{
-        "Content-Type":"application/json",
-        "X-Shopify-Access-Token": token
-      },
-      body: JSON.stringify({
-        product:{
-          title: item.title,
-          body_html: item.description,
-          product_type: item.genre,
-          tags: `${item.genre}, ${item.color}`,
-          variants:[{
-            price: item.basePrice,
-            inventory_management:"shopify"
-          }],
-          images: item.image ? [{ src:item.image }] : []
-        }
-      })
-    });
-
-    const created = await createRes.json();
-    const variant = created.product.variants[0];
-
-    await fetch(`https://${store}/admin/api/2024-01/inventory_levels/set.json`, {
-      method:"POST",
-      headers:{
-        "Content-Type":"application/json",
-        "X-Shopify-Access-Token": token
-      },
-      body: JSON.stringify({
-        location_id: LOCATION_ID,
-        inventory_item_id: variant.inventory_item_id,
-        available: item.stock
-      })
-    });
-  }
-}
-
-// ----------------------------
-// IMPORT
-// ----------------------------
-app.post("/import",(req,res)=>{
-  const items = req.body.items || [];
-  items.forEach(i=> queue.push(i));
-  res.json({ success:true });
-});
-
-// ----------------------------
-// QUEUE
-// ----------------------------
-async function processQueue(){
-
-  if (!queue.length) return;
-
-  const job = queue.shift();
-  const data = await fetchRelease(job.id);
-
-  history.push(data);
-
-  await upsertProduct(data);
-}
-
-setInterval(processQueue,1000);
-
-// ----------------------------
-// HISTORY (RESTORED)
-// ----------------------------
-app.get("/history",(req,res)=>{
-  res.json({ history });
-});
-
-// ----------------------------
-app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 FULL SYSTEM RESTORED CLEAN BUILD");
-});
+    await fetch(
+      `https
