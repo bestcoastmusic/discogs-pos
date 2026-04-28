@@ -217,6 +217,8 @@ async function upsertProduct(item){
   const store = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_TOKEN;
 
+  console.log("📦 SENDING TO SHOPIFY:", item.title, "STOCK:", item.stock);
+
   const r = await fetch(
     `https://${store}/admin/api/2024-01/products.json`,
     {
@@ -242,7 +244,59 @@ async function upsertProduct(item){
     }
   );
 
-const created = await r.json();
+  const created = await r.json();
+
+  console.log("📥 SHOPIFY RESPONSE:", JSON.stringify(created));
+
+  if (!created.product){
+    console.log("❌ SHOPIFY ERROR:", JSON.stringify(created));
+    return;
+  }
+
+  const variant = created.product.variants?.[0];
+
+  if (!variant){
+    console.log("❌ NO VARIANT:", JSON.stringify(created));
+    return;
+  }
+
+  // CONNECT INVENTORY
+  await fetch(
+    `https://${store}/admin/api/2024-01/inventory_levels/connect.json`,
+    {
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "X-Shopify-Access-Token": token
+      },
+      body: JSON.stringify({
+        location_id: LOCATION_ID,
+        inventory_item_id: variant.inventory_item_id
+      })
+    }
+  );
+
+  // SET INVENTORY
+  const inv = await fetch(
+    `https://${store}/admin/api/2024-01/inventory_levels/set.json`,
+    {
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "X-Shopify-Access-Token": token
+      },
+      body: JSON.stringify({
+        location_id: LOCATION_ID,
+        inventory_item_id: variant.inventory_item_id,
+        available: item.stock
+      })
+    }
+  );
+
+  const invRes = await inv.json();
+
+  console.log("📦 INVENTORY SET RESPONSE:", JSON.stringify(invRes));
+}
 
 // 🔥 DEBUG LOG
 if (!created.product){
