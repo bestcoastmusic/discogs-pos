@@ -5,7 +5,6 @@ const app = express();
 app.use(express.json());
 app.use(express.static("public"));
 
-// ----------------------------
 let queue = [];
 let history = [];
 let jobs = {};
@@ -15,17 +14,30 @@ const MIN_PRICE = 14.99;
 const LOCATION_ID = 113713512818;
 
 // ----------------------------
-// HELPERS
-// ----------------------------
 function normalizeBarcode(val){
-  return String(val || "")
-    .replace(/\D/g, "")
-    .replace(/^0+/, "");
+  return String(val || "").replace(/\D/g, "");
+}
+
+// 🔥 SMART MATCH
+function findMatch(barcode){
+
+  const clean = normalizeBarcode(barcode);
+
+  for (const key in dataMap){
+    if (
+      key.endsWith(clean) ||
+      clean.endsWith(key)
+    ){
+      return dataMap[key];
+    }
+  }
+
+  return null;
 }
 
 function extractExtras(str){
-  const matches = String(str || "").match(/\(.*?\)/g);
-  return matches ? matches.join(" ") : "";
+  const m = String(str || "").match(/\(.*?\)/g);
+  return m ? m.join(" ") : "";
 }
 
 function simplifyGenre(val){
@@ -40,8 +52,6 @@ function detectColor(text){
     if (lower.includes(c)) return c;
   }
 
-  if (lower.includes("colored")) return "colored";
-
   return "black";
 }
 
@@ -53,24 +63,20 @@ function calculatePrice(cost){
 }
 
 // ----------------------------
-// LOAD EXCEL
-// ----------------------------
 async function loadExcel(){
   try {
     const res = await fetch(process.env.CSV_URL);
     const buffer = await res.arrayBuffer();
 
-    const workbook = XLSX.read(buffer, { type: "buffer" });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const wb = XLSX.read(buffer, { type: "buffer" });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet);
 
     dataMap = {};
 
     rows.forEach(row => {
 
-      const barcode = normalizeBarcode(
-        row["UPC"] || row["Barcode"] || row["EAN"] || row["Code"]
-      );
+      const barcode = normalizeBarcode(row["UPC"]);
 
       if (!barcode) return;
 
@@ -94,11 +100,6 @@ loadExcel();
 setInterval(loadExcel, 60000);
 
 // ----------------------------
-function findMatch(barcode){
-  return dataMap[normalizeBarcode(barcode)] || null;
-}
-
-// ----------------------------
 async function safeFetch(url){
   try {
     const res = await fetch(url);
@@ -110,7 +111,7 @@ async function safeFetch(url){
 }
 
 // ----------------------------
-async function fetchRelease(id){
+async function fetchRelease(id, scannedBarcode){
 
   const r = await safeFetch(
     `https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`
@@ -119,18 +120,11 @@ async function fetchRelease(id){
   const artist = r.artists?.[0]?.name || "";
   const title = r.title || "";
 
-  const fullTitle = `${artist} - ${title}`;
-
-  const barcodeRaw =
-    r.identifiers?.find(i => i.type === "Barcode")?.value || "";
-
-  const barcode = normalizeBarcode(barcodeRaw);
-
-  const match = findMatch(barcode) || {};
+  const match = findMatch(scannedBarcode) || {};
 
   return {
     id,
-    title: fullTitle,
+    title: `${artist} - ${title}`,
     description: match.extras || "",
     image: r.images?.[0]?.uri || "",
     basePrice: calculatePrice(match.cost),
@@ -140,8 +134,6 @@ async function fetchRelease(id){
   };
 }
 
-// ----------------------------
-// SEARCH
 // ----------------------------
 app.post("/search", async (req,res)=>{
   const { barcode } = req.body;
@@ -154,14 +146,12 @@ app.post("/search", async (req,res)=>{
 
   const out = [];
   for (const r of results){
-    out.push(await fetchRelease(r.id));
+    out.push(await fetchRelease(r.id, barcode));
   }
 
   res.json({ results: out });
 });
 
-// ----------------------------
-// BULK
 // ----------------------------
 app.post("/bulk-start",(req,res)=>{
   const { items } = req.body;
@@ -187,7 +177,7 @@ async function processBulk(id, items){
 
     const opts = [];
     for (const r of top){
-      opts.push(await fetchRelease(r.id));
+      opts.push(await fetchRelease(r.id, barcode));
     }
 
     jobs[id].results.push({
@@ -212,8 +202,6 @@ app.get("/bulk-status/:id",(req,res)=>{
   });
 });
 
-// ----------------------------
-// SHOPIFY
 // ----------------------------
 async function upsertProduct(item){
 
@@ -265,7 +253,6 @@ async function upsertProduct(item){
     variant = created.product.variants[0];
   }
 
-  // CONNECT
   await fetch(
     `https://${store}/admin/api/2024-01/inventory_levels/connect.json`,
     {
@@ -281,7 +268,6 @@ async function upsertProduct(item){
     }
   );
 
-  // SET (NOT ADJUST — THIS FIXES 0 BUG)
   await fetch(
     `https://${store}/admin/api/2024-01/inventory_levels/set.json`,
     {
@@ -300,17 +286,23 @@ async function upsertProduct(item){
 }
 
 // ----------------------------
-app.post("/import",(req,res)=>{
   (req.body.items||[]).forEach(i=>queue.push(i));
+  res.json({ success:true });
+app.post("/import",(req,res)=>{
+  (req.body.items||[]).forEach(i=>{
+    queue.push({
+      id: i.id,
+      barcode: i.barcode // 🔥 THIS IS THE FIX
+    });
+  });
   res.json({ success:true });
 });
 
-// ----------------------------
 async function processQueue(){
   if (!queue.length) return;
 
   const job = queue.shift();
-  const data = await fetchRelease(job.id);
+  const data = await fetchRelease(job.id, job.barcode);
 
   history.push(data);
 
@@ -326,5 +318,5 @@ app.get("/history",(req,res)=>{
 
 // ----------------------------
 app.listen(process.env.PORT||10000,()=>{
-  console.log("🚀 STABLE BUILD LIVE");
+  console.log("🚀 FINAL FINAL BUILD");
 });
