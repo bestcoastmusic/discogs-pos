@@ -86,7 +86,7 @@ function buildBulkEntry(result, index){
     requestedBarcode: result.barcode || "",
     options: result.options || [],
     selectedId: firstOption?.id || "",
-    condition: "NM",
+    condition: "M",
     removed: false,
     editorOpen: false,
     edits: {},
@@ -151,7 +151,7 @@ function buildBulkImportItem(entry){
 
   return {
     id: current.id,
-    condition: entry.condition || "NM",
+    condition: entry.condition || "M",
     barcode: preview.barcode || current.barcode,
     overrides: {
       title: preview.title,
