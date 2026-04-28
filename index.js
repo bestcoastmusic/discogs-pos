@@ -487,6 +487,35 @@ async function findExistingVariantByBarcode(barcode){
   }) || null;
 }
 
+async function getImportStateForBarcode(barcode){
+  const clean = normalizeBarcode(barcode);
+  if (!clean){
+    return {
+      importAction: "check",
+      importProductId: null
+    };
+  }
+
+  try {
+    const existingVariant = await findExistingVariantByBarcode(clean);
+    return existingVariant
+      ? {
+          importAction: "update",
+          importProductId: existingVariant.product_id || null
+        }
+      : {
+          importAction: "create",
+          importProductId: null
+        };
+  } catch (err){
+    console.log("⚠️ IMPORT STATE LOOKUP FAILED:", clean, err.message);
+    return {
+      importAction: "check",
+      importProductId: null
+    };
+  }
+}
+
 async function fetchInventoryLevels(inventoryItemIds){
   const levels = new Map();
 
@@ -786,9 +815,7 @@ async function buildReleaseOptions(barcode){
   });
 
   for (const option of options){
-    const existingVariant = option.barcode
-      ? await findExistingVariantByBarcode(option.barcode)
-      : null;
+    const importState = await getImportStateForBarcode(option.barcode);
     const optionCandidates = getBarcodeCandidates(option.barcode);
     const normalizedTitle = normalizeComparableTitle(option.title);
     const barcodeMismatch = Boolean(
@@ -818,8 +845,8 @@ async function buildReleaseOptions(barcode){
     };
     option.reviewReasons = reviewReasons;
     option.needsReview = reviewReasons.length > 0;
-    option.importAction = existingVariant ? "update" : "create";
-    option.importProductId = existingVariant?.product_id || null;
+    option.importAction = importState.importAction;
+    option.importProductId = importState.importProductId;
   }
 
   return options;

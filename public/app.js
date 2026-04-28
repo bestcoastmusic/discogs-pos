@@ -165,7 +165,9 @@ function getBulkImportState(entry){
 
   return current.importAction === "update"
     ? { label: "Will Update", tone: "update" }
-    : { label: "Will Create", tone: "create" };
+    : current.importAction === "create"
+      ? { label: "Will Create", tone: "create" }
+      : { label: "Will Check On Import", tone: "pending" };
 }
 
 function getBulkReviewState(entry){
@@ -650,8 +652,11 @@ function renderBulkErrorCard(entry, container){
 
   const empty = document.createElement("div");
   empty.className = "empty-state";
+  const title = entry.error && entry.error !== "No Discogs match found"
+    ? "Could Not Prepare Match"
+    : "No Discogs Match";
   empty.innerHTML = `
-    <h3>No Discogs match</h3>
+    <h3>${title}</h3>
     <p class="section-copy">${entry.error || "This barcode did not return a usable release."}</p>
   `;
 
