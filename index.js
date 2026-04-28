@@ -36,6 +36,15 @@ const SHOPIFY_REQUEST_DELAY_MS = 550;
 const DISCOGS_REQUEST_DELAY_MS = 250;
 const DISCOGS_FETCH_GAP_MS = 900;
 const DISCOGS_BULK_OPTION_LIMIT = 3;
+const COUNTRY_PREFERENCE = [
+  "US",
+  "USA",
+  "United States",
+  "Canada",
+  "UK",
+  "United Kingdom",
+  "Europe"
+];
 const VARIANT_CACHE_TTL_MS = 60000;
 let shopifyVariantCache = {
   fetchedAt: 0,
@@ -205,6 +214,31 @@ function normalizeComparableTitle(value){
     .replace(/\b(lp|vinyl|record|stereo|mono|reissue|edition|limited)\b/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function getCountryPreferenceScore(country){
+  const normalized = String(country || "").trim().toLowerCase();
+  const index = COUNTRY_PREFERENCE.findIndex(entry => entry.toLowerCase() === normalized);
+  return index === -1 ? COUNTRY_PREFERENCE.length : index;
+}
+
+function sortResultsByCountryPreference(results){
+  return [...results].sort((a, b) => {
+    const scoreA = getCountryPreferenceScore(a.country);
+    const scoreB = getCountryPreferenceScore(b.country);
+
+    if (scoreA !== scoreB){
+      return scoreA - scoreB;
+    }
+
+    const yearA = Number(a.year || 0);
+    const yearB = Number(b.year || 0);
+    if (yearA !== yearB){
+      return yearB - yearA;
+    }
+
+    return String(a.title || "").localeCompare(String(b.title || ""));
+  });
 }
 
 const COLOR_PATTERNS = [
@@ -858,9 +892,10 @@ async function fetchRelease(id, barcode){
 
 async function buildReleaseOptions(barcode, mode = "single"){
   const rawResults = await searchDiscogsByBarcode(barcode);
+  const prioritizedResults = sortResultsByCountryPreference(rawResults);
   const results = mode === "bulk"
-    ? rawResults.slice(0, DISCOGS_BULK_OPTION_LIMIT)
-    : rawResults;
+    ? prioritizedResults.slice(0, DISCOGS_BULK_OPTION_LIMIT)
+    : prioritizedResults;
   const options = [];
 
   for (const result of results){
@@ -911,7 +946,7 @@ async function buildReleaseOptions(barcode, mode = "single"){
     option.importProductId = importState.importProductId;
   }
 
-  return options;
+  return sortResultsByCountryPreference(options);
 }
 
 // ----------------------------
