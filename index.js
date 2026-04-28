@@ -13,6 +13,19 @@ let inventory = new Set();
 let jobs = {};
 
 // ----------------------------
+// PRICING (RESTORED)
+// ----------------------------
+const conditionMultiplier = {
+  M: 1.5,
+  NM: 1.25,
+  "VG+": 1.0,
+  VG: 0.8,
+  G: 0.5
+};
+
+const BASE_PRICE = 20;
+
+// ----------------------------
 // UTILS
 // ----------------------------
 function sleep(ms) {
@@ -83,7 +96,6 @@ app.post("/search", async (req, res) => {
   const { barcode } = req.body;
 
   try {
-
     const data = await fetch(
       `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
     ).then(r => r.json());
@@ -105,7 +117,7 @@ app.post("/search", async (req, res) => {
 });
 
 // ----------------------------
-// BULK (PREVIEW ONLY — FIXED)
+// BULK (PREVIEW ONLY)
 // ----------------------------
 app.post("/bulk-start", async (req,res)=>{
   const { items } = req.body;
@@ -135,9 +147,6 @@ async function processBulk(jobId, items){
       if (full) options.push(full);
     }
 
-    // ❌ REMOVED AUTO ADD
-    // queue.push(...) IS GONE
-
     jobs[jobId].results.push({
       barcode,
       options,
@@ -164,7 +173,7 @@ app.get("/bulk-status/:id", (req,res)=>{
 });
 
 // ----------------------------
-// IMPORT (MANUAL ADD)
+// IMPORT
 // ----------------------------
 app.post("/import",(req,res)=>{
   const items = req.body.items || [];
@@ -184,7 +193,7 @@ app.post("/import",(req,res)=>{
 });
 
 // ----------------------------
-// PROCESS QUEUE
+// PROCESS QUEUE (PRICING FIX)
 // ----------------------------
 async function processQueue(){
   if (!queue.length) return;
@@ -193,15 +202,18 @@ async function processQueue(){
   const data = await fetchRelease(job.id);
   if (!data) return;
 
+  const multiplier = conditionMultiplier[job.condition] || 1;
+  const price = (BASE_PRICE * multiplier).toFixed(2);
+
   const item = {
     ...data,
     condition: job.condition || "NM",
-    price: "20.00"
+    price
   };
 
   history.push(item);
 
-  console.log("📦 Added:", item.title);
+  console.log("📦 Added:", item.title, "|", price);
 }
 
 setInterval(processQueue,1000);
@@ -215,5 +227,5 @@ app.get("/history", (req, res) => {
 
 // ----------------------------
 app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 POS RUNNING (BULK FIXED)");
+  console.log("🚀 POS RUNNING (PRICING RESTORED)");
 });
