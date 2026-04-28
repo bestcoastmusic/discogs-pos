@@ -242,8 +242,20 @@ async function upsertProduct(item){
     }
   );
 
-  const created = await r.json();
-  const variant = created.product.variants[0];
+const created = await r.json();
+
+// 🔥 DEBUG LOG
+if (!created.product){
+  console.log("❌ SHOPIFY ERROR:", JSON.stringify(created));
+  return;
+}
+
+const variant = created.product.variants?.[0];
+
+if (!variant){
+  console.log("❌ NO VARIANT RETURNED:", JSON.stringify(created));
+  return;
+}
 
   await fetch(
     `https://${store}/admin/api/2024-01/inventory_levels/connect.json`,
