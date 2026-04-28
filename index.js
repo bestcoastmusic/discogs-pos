@@ -1,4 +1,7 @@
 const express = require("express");
+const fs = require("fs");
+const csv = require("csv-parser");
+
 const app = express();
 
 app.use(express.json());
@@ -11,9 +14,28 @@ let queue = [];
 let history = [];
 let inventory = new Set();
 let jobs = {};
+let priceMap = {}; // 🔥 CSV PRICE MAP
 
 // ----------------------------
-// PRICING (RESTORED)
+// LOAD CSV (ON START)
+// ----------------------------
+fs.createReadStream("pricing.csv")
+  .pipe(csv())
+  .on("data", (row) => {
+    if (row.UPC && row.Price) {
+      const upc = row.UPC.toString().trim();
+      const price = parseFloat(row.Price);
+      if (upc && price) {
+        priceMap[upc] = price;
+      }
+    }
+  })
+  .on("end", () => {
+    console.log("✅ CSV Pricing Loaded:", Object.keys(priceMap).length);
+  });
+
+// ----------------------------
+// PRICING MULTIPLIER
 // ----------------------------
 const conditionMultiplier = {
   M: 1.5,
@@ -22,8 +44,6 @@ const conditionMultiplier = {
   VG: 0.8,
   G: 0.5
 };
-
-const BASE_PRICE = 20;
 
 // ----------------------------
 // UTILS
@@ -73,6 +93,22 @@ async function fetchRelease(id){
     const artist = r.artists?.[0]?.name || "Unknown";
     const rawTitle = r.title || "Unknown Title";
 
+    // 🔥 GET UPC FROM DISCOGS
+    const barcode = r.identifiers?.find(i => i.type === "Barcode")?.value?.replace(/\D/g, "");
+
+    // 🔥 PRICE FROM CSV
+    let basePrice = 20;
+
+    if (barcode && priceMap[barcode]) {
+      basePrice = priceMap[barcode];
+    } else {
+      // fallback to Discogs
+      try {
+        const stats = await fetch(`https://api.discogs.com/marketplace/stats/${id}?token=${process.env.DISCOGS_TOKEN}`).then(r=>r.json());
+        basePrice = stats.median_price || stats.lowest_price || 20;
+      } catch {}
+    }
+
     return {
       id,
       artist,
@@ -80,7 +116,8 @@ async function fetchRelease(id){
       year: r.year,
       country: r.country,
       image: r.images?.[0]?.uri,
-      color: detectColorFromFormats(r.formats || [])
+      color: detectColorFromFormats(r.formats || []),
+      basePrice
     };
 
   } catch {
@@ -117,62 +154,6 @@ app.post("/search", async (req, res) => {
 });
 
 // ----------------------------
-// BULK (PREVIEW ONLY)
-// ----------------------------
-app.post("/bulk-start", async (req,res)=>{
-  const { items } = req.body;
-
-  const jobId = Date.now().toString();
-  jobs[jobId] = { total: items.length, done: 0, results: [] };
-
-  processBulk(jobId, items);
-
-  res.json({ jobId });
-});
-
-async function processBulk(jobId, items){
-  for (let i=0;i<items.length;i++){
-    const barcode = items[i];
-
-    const data = await fetch(
-      `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
-    ).then(r=>r.json());
-
-    const top = (data.results||[]).slice(0,5);
-
-    let options = [];
-
-    for (const r of top){
-      const full = await fetchRelease(r.id);
-      if (full) options.push(full);
-    }
-
-    jobs[jobId].results.push({
-      barcode,
-      options,
-      best: options[0]
-    });
-
-    jobs[jobId].done++;
-
-    await sleep(250);
-  }
-}
-
-// ----------------------------
-// STATUS
-// ----------------------------
-app.get("/bulk-status/:id", (req,res)=>{
-  const job = jobs[req.params.id];
-  if (!job) return res.json({});
-
-  res.json({
-    progress: Math.floor((job.done / job.total) * 100),
-    results: job.results
-  });
-});
-
-// ----------------------------
 // IMPORT
 // ----------------------------
 app.post("/import",(req,res)=>{
@@ -193,7 +174,7 @@ app.post("/import",(req,res)=>{
 });
 
 // ----------------------------
-// PROCESS QUEUE (PRICING FIX)
+// PROCESS QUEUE
 // ----------------------------
 async function processQueue(){
   if (!queue.length) return;
@@ -203,7 +184,7 @@ async function processQueue(){
   if (!data) return;
 
   const multiplier = conditionMultiplier[job.condition] || 1;
-  const price = (BASE_PRICE * multiplier).toFixed(2);
+  const price = (data.basePrice * multiplier).toFixed(2);
 
   const item = {
     ...data,
@@ -227,5 +208,5 @@ app.get("/history", (req, res) => {
 
 // ----------------------------
 app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 POS RUNNING (PRICING RESTORED)");
+  console.log("🚀 POS RUNNING (CSV PRICING)");
 });
