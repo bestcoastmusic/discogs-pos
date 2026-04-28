@@ -12,9 +12,11 @@ app.use(express.static("public"));
 // ----------------------------
 let queue = [];
 let history = [];
-let inventory = new Set();
+let inventorySet = new Set();
 let jobs = {};
+
 let priceMap = {};
+let stockMap = {}; // 🔥 NEW
 
 // ----------------------------
 // LOAD CSV
@@ -22,17 +24,31 @@ let priceMap = {};
 fs.createReadStream("pricing.csv")
   .pipe(csv())
   .on("data", (row) => {
-    if (row.UPC && row.Price) {
-      const upc = row.UPC.toString().replace(/\D/g, "");
+
+    const upc = row.UPC?.toString().replace(/\D/g, "");
+
+    if (!upc) return;
+
+    // PRICE
+    if (row.Price) {
       priceMap[upc] = parseFloat(row.Price);
     }
+
+    // STOCK
+    if (row.QtyInStock !== undefined) {
+      stockMap[upc] = parseInt(row.QtyInStock) || 0;
+    }
+
   })
   .on("end", () => {
-    console.log("✅ CSV Pricing Loaded:", Object.keys(priceMap).length);
+    console.log("✅ CSV Loaded:",
+      "Prices:", Object.keys(priceMap).length,
+      "Stock:", Object.keys(stockMap).length
+    );
   });
 
 // ----------------------------
-// PRICING
+// PRICING MULTIPLIER
 // ----------------------------
 const conditionMultiplier = {
   M: 1.5,
@@ -50,33 +66,6 @@ function sleep(ms) {
 }
 
 // ----------------------------
-// CLEAN TITLE
-// ----------------------------
-function cleanTitle(artist, rawTitle){
-  if (!rawTitle) return artist;
-
-  let title = rawTitle.replace(artist + " - ", "");
-  const parts = title.split(" - ");
-
-  if (parts.length > 1) {
-    return artist + " - " + parts[0] + ": " + parts.slice(1).join(" - ");
-  }
-
-  return artist + " - " + title;
-}
-
-// ----------------------------
-// COLOR DETECTION
-// ----------------------------
-function detectColorFromFormats(formats = []) {
-  const text = JSON.stringify(formats).toLowerCase();
-  const colors = ["red","blue","green","yellow","orange","purple","pink","white","clear","gold","silver","smoke","marble","splatter"];
-
-  const found = colors.filter(c => text.includes(c));
-  return found.length ? found.join(" / ") : "Black";
-}
-
-// ----------------------------
 // FETCH RELEASE
 // ----------------------------
 async function fetchRelease(id){
@@ -86,10 +75,11 @@ async function fetchRelease(id){
     await sleep(120);
 
     const artist = r.artists?.[0]?.name || "Unknown";
-    const rawTitle = r.title || "Unknown Title";
+    const title = r.title || "Unknown Title";
 
     const barcode = r.identifiers?.find(i => i.type === "Barcode")?.value?.replace(/\D/g, "");
 
+    // PRICE
     let basePrice = 20;
 
     if (barcode && priceMap[barcode]) {
@@ -101,15 +91,22 @@ async function fetchRelease(id){
       } catch {}
     }
 
+    // STOCK
+    let stock = 0;
+    if (barcode && stockMap[barcode] !== undefined) {
+      stock = stockMap[barcode];
+    }
+
     return {
       id,
       artist,
-      title: cleanTitle(artist, rawTitle),
+      title: artist + " - " + title,
       year: r.year,
       country: r.country,
       image: r.images?.[0]?.uri,
-      color: detectColorFromFormats(r.formats || []),
-      basePrice
+      color: "Black",
+      basePrice,
+      stock
     };
 
   } catch {
@@ -146,80 +143,63 @@ app.post("/search", async (req, res) => {
 });
 
 // ----------------------------
-// BULK START (FIXED)
-// ----------------------------
-app.post("/bulk-start", async (req,res)=>{
-  const { items } = req.body;
-
-  const jobId = Date.now().toString();
-  jobs[jobId] = { total: items.length, done: 0, results: [] };
-
-  processBulk(jobId, items);
-
-  res.json({ jobId });
-});
-
-async function processBulk(jobId, items){
-  for (let i=0;i<items.length;i++){
-    const barcode = items[i];
-
-    const data = await fetch(
-      `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
-    ).then(r=>r.json());
-
-    const top = (data.results||[]).slice(0,5);
-
-    let options = [];
-
-    for (const r of top){
-      const full = await fetchRelease(r.id);
-      if (full) options.push(full);
-    }
-
-    jobs[jobId].results.push({
-      barcode,
-      options,
-      best: options[0]
-    });
-
-    jobs[jobId].done++;
-
-    await sleep(200);
-  }
-}
-
-// ----------------------------
-// BULK STATUS
-// ----------------------------
-app.get("/bulk-status/:id", (req,res)=>{
-  const job = jobs[req.params.id];
-  if (!job) return res.json({});
-
-  res.json({
-    progress: Math.floor((job.done / job.total) * 100),
-    results: job.results
-  });
-});
-
-// ----------------------------
 // IMPORT
 // ----------------------------
 app.post("/import",(req,res)=>{
   const items = req.body.items || [];
 
-  let duplicates=[],added=[];
-
   items.forEach(i=>{
-    if (inventory.has(i.id)) duplicates.push(i.id);
-    else {
-      inventory.add(i.id);
+    if (!inventorySet.has(i.id)) {
+      inventorySet.add(i.id);
       queue.push(i);
-      added.push(i.id);
     }
   });
 
-  res.json({ success:true,duplicates,added });
+  res.json({ success:true });
 });
+
+// ----------------------------
+// SHOPIFY CREATE
+// ----------------------------
+async function createShopifyProduct(item) {
+
+  const store = process.env.SHOPIFY_STORE;
+  const token = process.env.SHOPIFY_TOKEN;
+
+  try {
+
+    const res = await fetch(`https://${store}/admin/api/2024-01/products.json`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": token
+      },
+      body: JSON.stringify({
+        product: {
+          title: item.title,
+          body_html: `${item.artist}<br/>${item.color}`,
+          variants: [{
+            price: item.price,
+            inventory_quantity: item.stock,
+            inventory_management: "shopify"
+          }],
+          images: item.image ? [{ src: item.image }] : []
+        }
+      })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      console.log("❌ Shopify error:", data);
+    } else {
+      console.log("✅ Shopify created:", data.product.id);
+    }
+
+  } catch (e) {
+    console.log("Shopify crash:", e.message);
+  }
+}
 
 // ----------------------------
 // PROCESS QUEUE
@@ -242,7 +222,9 @@ async function processQueue(){
 
   history.push(item);
 
-  console.log("📦 Added:", item.title, "|", price);
+  await createShopifyProduct(item);
+
+  console.log("📦 Added:", item.title, "|", price, "| Stock:", item.stock);
 }
 
 setInterval(processQueue,1000);
@@ -256,4 +238,4 @@ app.get("/history", (req, res) => {
 
 // ----------------------------
 app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 POS RUNNING (CSV + BULK FIXED)");
+  console.log("🚀 POS RUNNING (CSV PRICE + INVENTORY)");
