@@ -101,7 +101,6 @@ async function safeFetch(url){
 }
 
 // ----------------------------
-// ✅ FIXED: THIS WAS COMPLETELY WRONG BEFORE
 async function fetchRelease(id, barcode){
 
   const r = await safeFetch(
@@ -126,12 +125,84 @@ async function fetchRelease(id, barcode){
 }
 
 // ----------------------------
+// ✅ SEARCH (FIXES SCAN BUTTON)
+app.post("/search", async (req,res)=>{
+  const { barcode } = req.body;
+
+  const data = await safeFetch(
+    `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
+  );
+
+  const results = (data.results||[]).slice(0,5);
+
+  const out = [];
+  for (const r of results){
+    out.push(await fetchRelease(r.id, barcode));
+  }
+
+  res.json({ results: out });
+});
+
+// ----------------------------
+// ✅ BULK START
+app.post("/bulk-start",(req,res)=>{
+  const { items } = req.body;
+
+  const id = Date.now().toString();
+  jobs[id] = { total: items.length, done: 0, results: [] };
+
+  processBulk(id, items);
+
+  res.json({ jobId: id });
+});
+
+// ----------------------------
+async function processBulk(id, items){
+  for (let i=0;i<items.length;i++){
+
+    const barcode = items[i];
+
+    const data = await safeFetch(
+      `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
+    );
+
+    const top = (data.results||[]).slice(0,5);
+
+    const opts = [];
+    for (const r of top){
+      opts.push(await fetchRelease(r.id, barcode));
+    }
+
+    jobs[id].results.push({
+      barcode,
+      options: opts,
+      best: opts[0] || null
+    });
+
+    jobs[id].done = i + 1;
+
+    await new Promise(r=>setTimeout(r,120));
+  }
+}
+
+// ----------------------------
+// ✅ BULK STATUS
+app.get("/bulk-status/:id",(req,res)=>{
+  const job = jobs[req.params.id];
+  if (!job) return res.json({ progress:0, results:[] });
+
+  res.json({
+    progress: Math.floor((job.done/job.total)*100),
+    results: job.results
+  });
+});
+
+// ----------------------------
 async function upsertProduct(item){
 
   const store = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_TOKEN;
 
-  // create product
   const r = await fetch(
     `https://${store}/admin/api/2024-01/products.json`,
     {
@@ -160,7 +231,6 @@ async function upsertProduct(item){
   const created = await r.json();
   const variant = created.product.variants[0];
 
-  // connect inventory
   await fetch(
     `https://${store}/admin/api/2024-01/inventory_levels/connect.json`,
     {
@@ -176,7 +246,6 @@ async function upsertProduct(item){
     }
   );
 
-  // set inventory
   await fetch(
     `https://${store}/admin/api/2024-01/inventory_levels/set.json`,
     {
@@ -226,5 +295,5 @@ app.get("/history",(req,res)=>{
 
 // ----------------------------
 app.listen(process.env.PORT||10000,()=>{
-  console.log("🚀 FIXED BUILD LIVE");
+  console.log("🚀 FINAL STABLE BUILD (ALL ROUTES RESTORED)");
 });
