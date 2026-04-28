@@ -67,8 +67,7 @@ async function fetchRelease(id){
       year: r.year,
       country: r.country,
       image: r.images?.[0]?.uri,
-      color: detectColorFromFormats(r.formats || []),
-      basePrice: 20
+      color: detectColorFromFormats(r.formats || [])
     };
 
   } catch {
@@ -77,7 +76,7 @@ async function fetchRelease(id){
 }
 
 // ----------------------------
-// SEARCH (FIXED)
+// SEARCH
 // ----------------------------
 app.post("/search", async (req, res) => {
 
@@ -100,14 +99,13 @@ app.post("/search", async (req, res) => {
 
     res.json({ results: formatted });
 
-  } catch (err) {
-    console.log("SEARCH ERROR:", err.message);
+  } catch {
     res.json({ results: [] });
   }
 });
 
 // ----------------------------
-// BULK START
+// BULK (PREVIEW ONLY — FIXED)
 // ----------------------------
 app.post("/bulk-start", async (req,res)=>{
   const { items } = req.body;
@@ -120,9 +118,6 @@ app.post("/bulk-start", async (req,res)=>{
   res.json({ jobId });
 });
 
-// ----------------------------
-// BULK PROCESS
-// ----------------------------
 async function processBulk(jobId, items){
   for (let i=0;i<items.length;i++){
     const barcode = items[i];
@@ -140,16 +135,13 @@ async function processBulk(jobId, items){
       if (full) options.push(full);
     }
 
-    const best = options[0];
-
-    if (best){
-      queue.push({ id: best.id, condition: "NM" });
-    }
+    // ❌ REMOVED AUTO ADD
+    // queue.push(...) IS GONE
 
     jobs[jobId].results.push({
       barcode,
       options,
-      best
+      best: options[0]
     });
 
     jobs[jobId].done++;
@@ -172,7 +164,7 @@ app.get("/bulk-status/:id", (req,res)=>{
 });
 
 // ----------------------------
-// IMPORT
+// IMPORT (MANUAL ADD)
 // ----------------------------
 app.post("/import",(req,res)=>{
   const items = req.body.items || [];
@@ -201,12 +193,10 @@ async function processQueue(){
   const data = await fetchRelease(job.id);
   if (!data) return;
 
-  const price = (data.basePrice * 1.25).toFixed(2);
-
   const item = {
     ...data,
     condition: job.condition || "NM",
-    price
+    price: "20.00"
   };
 
   history.push(item);
@@ -225,5 +215,5 @@ app.get("/history", (req, res) => {
 
 // ----------------------------
 app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 POS RUNNING (FULL FIX)");
+  console.log("🚀 POS RUNNING (BULK FIXED)");
 });
