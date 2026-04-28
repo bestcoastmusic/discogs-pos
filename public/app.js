@@ -729,18 +729,30 @@ function renderBulkCard(entry, container){
   const colorChip = document.createElement("span");
   colorChip.className = "chip";
 
+  const actionChip = document.createElement("span");
+  actionChip.className = "chip";
+
+  const reviewChip = document.createElement("span");
+  reviewChip.className = "chip chip-review";
+
   chips.appendChild(priceChip);
   chips.appendChild(stockChip);
   chips.appendChild(barcodeChip);
   chips.appendChild(colorChip);
+  chips.appendChild(actionChip);
+  chips.appendChild(reviewChip);
 
   const copy = document.createElement("p");
   copy.className = "card-copy";
+
+  const reviewNote = document.createElement("div");
+  reviewNote.className = "review-note";
 
   body.appendChild(title);
   body.appendChild(meta);
   body.appendChild(chips);
   body.appendChild(copy);
+  body.appendChild(reviewNote);
 
   preview.appendChild(coverFrame);
   preview.appendChild(body);
