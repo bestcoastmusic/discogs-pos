@@ -142,6 +142,62 @@ function getBulkPreview(entry){
   };
 }
 
+function getBulkImportState(entry){
+  const current = getBulkCurrentOption(entry);
+  if (!current){
+    return {
+      label: "Will Check On Import",
+      tone: "pending"
+    };
+  }
+
+  const editedBarcode = entry.edits.barcode !== undefined
+    ? normalizeBarcode(entry.edits.barcode)
+    : "";
+  const currentBarcode = normalizeBarcode(current.barcode);
+
+  if (editedBarcode && editedBarcode !== currentBarcode){
+    return {
+      label: "Will Check On Import",
+      tone: "pending"
+    };
+  }
+
+  return current.importAction === "update"
+    ? { label: "Will Update", tone: "update" }
+    : { label: "Will Create", tone: "create" };
+}
+
+function getBulkReviewState(entry){
+  const current = getBulkCurrentOption(entry);
+  if (!current){
+    return { needsReview: false, reasons: [] };
+  }
+
+  const reasons = [];
+  const editedColor = String(entry.edits.color || "").trim();
+  const editedBarcode = entry.edits.barcode !== undefined
+    ? normalizeBarcode(entry.edits.barcode)
+    : "";
+
+  if (current.reviewFlags?.fallbackBlack && !editedColor){
+    reasons.push("Color came back as black without a clear Discogs color callout.");
+  }
+
+  if (current.reviewFlags?.similarOptions){
+    reasons.push("Several Discogs matches for this barcode look very similar.");
+  }
+
+  if (current.reviewFlags?.barcodeMismatch && !editedBarcode){
+    reasons.push("Discogs returned a different barcode than the one you scanned.");
+  }
+
+  return {
+    needsReview: reasons.length > 0,
+    reasons
+  };
+}
+
 function buildBulkImportItem(entry){
   if (entry.removed) return null;
 
@@ -427,18 +483,30 @@ function renderCard(options, container){
   const colorChip = document.createElement("span");
   colorChip.className = "chip";
 
+  const actionChip = document.createElement("span");
+  actionChip.className = "chip";
+
+  const reviewChip = document.createElement("span");
+  reviewChip.className = "chip chip-review";
+
   chips.appendChild(priceChip);
   chips.appendChild(stockChip);
   chips.appendChild(barcodeChip);
   chips.appendChild(colorChip);
+  chips.appendChild(actionChip);
+  chips.appendChild(reviewChip);
 
   const copy = document.createElement("p");
   copy.className = "card-copy";
+
+  const reviewNote = document.createElement("div");
+  reviewNote.className = "review-note";
 
   body.appendChild(title);
   body.appendChild(meta);
   body.appendChild(chips);
   body.appendChild(copy);
+  body.appendChild(reviewNote);
 
   preview.appendChild(coverFrame);
   preview.appendChild(body);
@@ -818,6 +886,8 @@ function renderBulkCard(entry, container){
     if (!current) return;
 
     const stock = Number(current.stock || 0);
+    const importState = getBulkImportState(entry);
+    const reviewState = getBulkReviewState(entry);
     requested.textContent = entry.requestedBarcode
       ? `Requested UPC ${entry.requestedBarcode}`
       : "Requested UPC missing";
@@ -831,12 +901,22 @@ function renderBulkCard(entry, container){
     priceChip.textContent = `$${formatMoney(current.basePrice)}`;
     barcodeChip.textContent = current.barcode ? `UPC ${current.barcode}` : "No barcode";
     colorChip.textContent = `${titleCase(current.color || "black")} vinyl`;
+    actionChip.className = `chip chip-action-${importState.tone}`;
+    actionChip.textContent = importState.label;
     stockChip.className = `chip chip-stock ${stock > 0 ? "in-stock" : "out-stock"}`;
     stockChip.textContent = stock > 0 ? `${stock} in stock` : "Out of stock";
 
     copy.textContent =
       current.descriptionText ||
       "No additional Discogs description was available for this release.";
+
+    card.classList.toggle("needs-review", reviewState.needsReview);
+    reviewChip.style.display = reviewState.needsReview ? "inline-flex" : "none";
+    reviewChip.textContent = "Needs Review";
+    reviewNote.style.display = reviewState.needsReview ? "block" : "none";
+    reviewNote.innerHTML = reviewState.needsReview
+      ? `<strong>Review before import:</strong> ${reviewState.reasons.join(" ")}`
+      : "";
 
     if (current.image){
       coverImage.src = current.image;

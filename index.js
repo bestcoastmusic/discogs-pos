@@ -194,6 +194,16 @@ function simplifyGenre(val){
   return val ? val.split(/[\/,]/)[0].trim() : "Other";
 }
 
+function normalizeComparableTitle(value){
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\b(lp|vinyl|record|stereo|mono|reissue|edition|limited)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 const COLOR_PATTERNS = [
   { color: "cream", patterns: [/\bcream\b/, /\bivory\b/, /\boff[-\s]?white\b/, /\beggshell\b/, /\bbeige\b/, /\bbone\b/, /\btan\b/, /\bsand\b/, /\bkhaki\b/] },
   { color: "clear", patterns: [/\bclear\b/, /\btransparent\b/, /\btranslucent\b/] },
@@ -703,6 +713,7 @@ async function fetchRelease(id, barcode){
   );
   const resolvedBarcode = normalizeBarcode(barcode) || releaseBarcode;
   const match = findMatch(resolvedBarcode);
+  const spreadsheetColor = String(match?.color || "").trim().toLowerCase();
   const discogsColor = detectColor(
     title,
     format,
@@ -710,6 +721,7 @@ async function fetchRelease(id, barcode){
     (r.formats || []).flatMap(entry => entry.descriptions || []),
     (r.styles || []).join(" ")
   );
+  const finalColor = chooseColor(spreadsheetColor, discogsColor);
   const description = buildDiscogsDescription({
     year,
     country,
@@ -745,7 +757,14 @@ async function fetchRelease(id, barcode){
     label,
     format,
     genre: match?.genre || "Other",
-    color: chooseColor(match?.color, discogsColor)
+    color: finalColor,
+    reviewFlags: {
+      fallbackBlack: finalColor === "black" && spreadsheetColor !== "black" && discogsColor !== "black",
+      explicitBlack: finalColor === "black" && (spreadsheetColor === "black" || discogsColor === "black"),
+      barcodeMismatch: false,
+      similarOptions: false
+    },
+    reviewReasons: []
   };
 }
 
@@ -756,6 +775,51 @@ async function buildReleaseOptions(barcode){
   for (const result of results){
     const full = await fetchRelease(result.id, barcode);
     if (full) options.push(full);
+  }
+
+  const requestedCandidates = getBarcodeCandidates(barcode);
+  const titleCounts = new Map();
+
+  options.forEach(option => {
+    const normalizedTitle = normalizeComparableTitle(option.title);
+    titleCounts.set(normalizedTitle, (titleCounts.get(normalizedTitle) || 0) + 1);
+  });
+
+  for (const option of options){
+    const existingVariant = option.barcode
+      ? await findExistingVariantByBarcode(option.barcode)
+      : null;
+    const optionCandidates = getBarcodeCandidates(option.barcode);
+    const normalizedTitle = normalizeComparableTitle(option.title);
+    const barcodeMismatch = Boolean(
+      requestedCandidates.length &&
+      optionCandidates.length &&
+      !optionCandidates.some(candidate => requestedCandidates.includes(candidate))
+    );
+    const similarOptions = options.length > 1 && (titleCounts.get(normalizedTitle) || 0) > 1;
+    const reviewReasons = [];
+
+    if (option.reviewFlags?.fallbackBlack){
+      reviewReasons.push("Color fell back to black, so the pressing color may need a quick manual check.");
+    }
+
+    if (similarOptions){
+      reviewReasons.push("Multiple Discogs matches look very similar for this barcode.");
+    }
+
+    if (barcodeMismatch){
+      reviewReasons.push("Discogs returned a different barcode than the one you scanned.");
+    }
+
+    option.reviewFlags = {
+      ...(option.reviewFlags || {}),
+      barcodeMismatch,
+      similarOptions
+    };
+    option.reviewReasons = reviewReasons;
+    option.needsReview = reviewReasons.length > 0;
+    option.importAction = existingVariant ? "update" : "create";
+    option.importProductId = existingVariant?.product_id || null;
   }
 
   return options;
