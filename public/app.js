@@ -1,4 +1,4 @@
-console.log("POS FIXED BULK");
+ console.log("POS FULL + CAMERA");
 
 // ----------------------------
 // INIT
@@ -60,10 +60,9 @@ async function startBulk(){
 
   box.innerHTML = `
     <h3>Processing...</h3>
-    <div style="background:#333;height:20px;border-radius:10px;">
-      <div id="progressBar" style="height:20px;width:0%;background:#00e676;border-radius:10px;"></div>
+    <div style="background:#333;height:20px;">
+      <div id="progressBar" style="height:20px;width:0%;background:#00e676;"></div>
     </div>
-    <p id="progressText">0%</p>
     <div id="bulkResults"></div>
   `;
 
@@ -76,13 +75,12 @@ async function pollBulk(jobId){
   const data = await res.json();
 
   document.getElementById("progressBar").style.width = data.progress + "%";
-  document.getElementById("progressText").innerText = data.progress + "%";
 
   const container = document.getElementById("bulkResults");
   container.innerHTML = "";
 
   data.results.forEach(item=>{
-    if (!item.options || item.options.length === 0) return;
+    if (!item.options?.length) return;
 
     const card = document.createElement("div");
     card.className = "card";
@@ -98,36 +96,26 @@ async function pollBulk(jobId){
 }
 
 // ----------------------------
-// RENDER CARD (FIXED)
+// CARD
 // ----------------------------
 function renderCard(options, container){
 
   const best = options[0];
 
-  // IMAGE + INFO
-  const info = document.createElement("div");
-  info.innerHTML = `
-    <img src="${best.image || ""}" width="60"/>
-    <b>${best.title}</b><br/>
-    ${best.year || ""} • ${best.country || ""}<br/>
-    <span style="color:#00e676">${best.color || "Black"} Vinyl</span>
-  `;
-
-  // VARIANT SELECT
   const select = document.createElement("select");
 
   options.forEach(opt=>{
     const o = document.createElement("option");
     o.value = opt.id;
+    o.dataset.barcode = opt.barcode || "";
 
     o.textContent =
       (opt.id === best.id ? "⭐ " : "") +
-      `${opt.title} (${opt.year || "?"} • ${opt.country || "?"} • ${opt.color || "Black"})`;
+      `${opt.title}`;
 
     select.appendChild(o);
   });
 
-  // CONDITION
   const cond = document.createElement("select");
 
   ["M","NM","VG+","VG","G"].forEach(c=>{
@@ -137,7 +125,6 @@ function renderCard(options, container){
     cond.appendChild(o);
   });
 
-  // ADD BUTTON
   const btn = document.createElement("button");
   btn.textContent = "Add";
 
@@ -146,43 +133,20 @@ function renderCard(options, container){
       method:"POST",
       headers:{ "Content-Type":"application/json" },
       body: JSON.stringify({
-        items:[{ id: select.value, condition: cond.value }]
+        items:[{
+          id: select.value,
+          condition: cond.value,
+          barcode: select.options[select.selectedIndex].dataset.barcode
+        }]
       })
     });
 
     alert("Added");
   };
 
-  container.appendChild(info);
   container.appendChild(select);
   container.appendChild(cond);
   container.appendChild(btn);
-}
-
-// ----------------------------
-// HISTORY
-// ----------------------------
-async function loadHistory(){
-  const res = await fetch("/history");
-  const data = await res.json();
-
-  const box = document.getElementById("history");
-  if (!box) return;
-
-  box.innerHTML = "<h3>Recent Adds</h3>";
-
-  data.history.slice().reverse().forEach(item=>{
-    const div = document.createElement("div");
-    div.className = "card";
-
-    div.innerHTML = `
-      <b>${item.title}</b><br/>
-      $${item.price} • ${item.condition}<br/>
-      <span style="color:#00e676">${item.color}</span>
-    `;
-
-    box.appendChild(div);
-  });
 }
 
 // ----------------------------
@@ -191,21 +155,28 @@ async function loadHistory(){
 let stream;
 
 async function startCamera(){
+
   const video = document.getElementById("camera");
 
   video.style.display = "block";
 
-  stream = await navigator.mediaDevices.getUserMedia({
-    video:{ facingMode:"environment" }
-  });
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:"environment" }
+    });
 
-  video.srcObject = stream;
-  video.play();
+    video.srcObject = stream;
+    video.play();
 
-  scanFrame();
+    scanFrame();
+
+  } catch {
+    alert("Camera not supported");
+  }
 }
 
 async function scanFrame(){
+
   const video = document.getElementById("camera");
 
   if (video.readyState === video.HAVE_ENOUGH_DATA) {
@@ -241,4 +212,29 @@ function stopCamera(){
   if (stream){
     stream.getTracks().forEach(t=>t.stop());
   }
+}
+
+// ----------------------------
+// HISTORY
+// ----------------------------
+async function loadHistory(){
+  const res = await fetch("/history");
+  const data = await res.json();
+
+  const box = document.getElementById("history");
+  if (!box) return;
+
+  box.innerHTML = "<h3>Recent Adds</h3>";
+
+  data.history.slice().reverse().forEach(item=>{
+    const div = document.createElement("div");
+    div.className = "card";
+
+    div.innerHTML = `
+      <b>${item.title}</b><br/>
+      $${item.price} • ${item.condition}
+    `;
+
+    box.appendChild(div);
+  });
 }
