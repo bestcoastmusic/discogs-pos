@@ -9,21 +9,15 @@ app.use(express.static("public"));
 // ----------------------------
 // STATE
 // ----------------------------
-let queue = [];
-let history = [];
-let inventorySet = new Set();
-let jobs = {};
-
 let priceMap = {};
 let stockMap = {};
-let shopifyMap = {};
 
 // ----------------------------
-// SAFE FETCH
+// NORMALIZE UPC
 // ----------------------------
-async function fetchBuffer(url){
-  const res = await fetch(url);
-  return await res.arrayBuffer();
+function normalizeUPC(val){
+  if (!val) return "";
+  return String(val).replace(/\D/g,"").slice(-12);
 }
 
 // ----------------------------
@@ -32,11 +26,11 @@ async function fetchBuffer(url){
 async function loadExcel(){
 
   try {
-    const buffer = await fetchBuffer(process.env.CSV_URL);
+    const res = await fetch(process.env.CSV_URL);
+    const buffer = await res.arrayBuffer();
 
     const workbook = XLSX.read(buffer, { type: "buffer" });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
-
     const rows = XLSX.utils.sheet_to_json(sheet);
 
     priceMap = {};
@@ -62,7 +56,7 @@ async function loadExcel(){
 
       if (!upcKey) return;
 
-      const upc = String(row[upcKey]).replace(/\D/g,"");
+      const upc = normalizeUPC(row[upcKey]);
       const price = parseFloat(row[priceKey]) || 0;
       const stock = parseInt(row[stockKey]) || 0;
 
@@ -84,7 +78,7 @@ loadExcel();
 setInterval(loadExcel, 60000);
 
 // ----------------------------
-// SAFE FETCH JSON
+// SAFE FETCH
 // ----------------------------
 async function safeFetch(url){
   try {
@@ -110,13 +104,15 @@ async function fetchRelease(id){
   const artist = r.artists?.[0]?.name || "Unknown";
   const title = r.title || "Unknown";
 
+  const barcodeRaw = r.identifiers
+    ?.find(i => i.type === "Barcode")
+    ?.value;
+
+  const barcode = normalizeUPC(barcodeRaw);
+
   const year = r.year || "";
   const country = r.country || "";
   const image = r.images?.[0]?.uri || "";
-
-  const barcode = r.identifiers
-    ?.find(i => i.type === "Barcode")
-    ?.value?.replace(/\D/g, "");
 
   const formatText = JSON.stringify(r.formats || []).toLowerCase();
 
@@ -164,136 +160,6 @@ app.post("/search", async (req, res) => {
 });
 
 // ----------------------------
-// BULK
-// ----------------------------
-app.post("/bulk-start", async (req,res)=>{
-  const { items } = req.body;
-
-  const jobId = Date.now().toString();
-  jobs[jobId] = { total: items.length, done: 0, results: [] };
-
-  processBulk(jobId, items);
-
-  res.json({ jobId });
-});
-
-async function processBulk(jobId, items){
-
-  for (let i=0;i<items.length;i++){
-
-    const barcode = items[i];
-
-    const data = await safeFetch(
-      `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
-    );
-
-    const top = (data.results||[]).slice(0,5);
-
-    let options = [];
-
-    for (const r of top){
-      const full = await fetchRelease(r.id);
-      if (full) options.push(full);
-    }
-
-    jobs[jobId].results.push({
-      barcode,
-      options,
-      best: options[0]
-    });
-
-    jobs[jobId].done++;
-
-    await new Promise(r=>setTimeout(r,150));
-  }
-}
-
-app.get("/bulk-status/:id", (req,res)=>{
-  const job = jobs[req.params.id];
-  if (!job) return res.json({});
-
-  res.json({
-    progress: Math.floor((job.done / job.total) * 100),
-    results: job.results
-  });
-});
-
-// ----------------------------
-// IMPORT
-// ----------------------------
-app.post("/import",(req,res)=>{
-  const items = req.body.items || [];
-
-  items.forEach(i=>{
-    if (!inventorySet.has(i.id)){
-      inventorySet.add(i.id);
-      queue.push(i);
-    }
-  });
-
-  res.json({ success:true });
-});
-
-// ----------------------------
-// SHOPIFY
-// ----------------------------
-async function createShopifyProduct(item){
-
-  const store = process.env.SHOPIFY_STORE;
-  const token = process.env.SHOPIFY_TOKEN;
-
-  const res = await fetch(`https://${store}/admin/api/2024-01/products.json`, {
-    method:"POST",
-    headers:{
-      "Content-Type":"application/json",
-      "X-Shopify-Access-Token": token
-    },
-    body: JSON.stringify({
-      product:{
-        title: item.title,
-        variants:[{
-          price: item.basePrice,
-          inventory_quantity: item.stock,
-          inventory_management: "shopify"
-        }],
-        images: item.image ? [{ src:item.image }] : []
-      }
-    })
-  });
-
-  const data = await res.json();
-
-  if (!data.product){
-    console.log("❌ Shopify error:", data);
-  }
-}
-
-// ----------------------------
-// PROCESS QUEUE
-// ----------------------------
-async function processQueue(){
-
-  if (!queue.length) return;
-
-  const job = queue.shift();
-  const data = await fetchRelease(job.id);
-  if (!data) return;
-
-  history.push(data);
-
-  await createShopifyProduct(data);
-
-  console.log("📦 Added:", data.title);
-}
-
-setInterval(processQueue,1000);
-
-// ----------------------------
-app.get("/history", (req, res) => {
-  res.json({ history });
-});
-
-// ----------------------------
 app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 FULL APP + EXCEL AUTO SYNC");
+  console.log("🚀 UPC MATCH FIXED");
 });
