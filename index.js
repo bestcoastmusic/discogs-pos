@@ -26,6 +26,22 @@ function normalizeUPC(val){
 }
 
 // ----------------------------
+// 🔥 PRICING RULE
+// ----------------------------
+function calculatePrice(cost){
+
+  if (!cost) return 0;
+
+  // add 25%
+  const marked = cost * 1.25;
+
+  // round UP to .99
+  const rounded = Math.ceil(marked);
+
+  return (rounded - 0.01).toFixed(2);
+}
+
+// ----------------------------
 // LOAD EXCEL
 // ----------------------------
 async function loadExcel(){
@@ -60,12 +76,12 @@ async function loadExcel(){
       if (!upcKey) return;
 
       const upc = normalizeUPC(row[upcKey]);
-      const price = parseFloat(row[priceKey]) || 0;
+      const cost = parseFloat(row[priceKey]) || 0;
       const stock = parseInt(row[stockKey]) || 0;
 
       if (!upc) return;
 
-      priceMap[upc] = price;
+      priceMap[upc] = cost; // store cost
       stockMap[upc] = stock;
     });
 
@@ -114,12 +130,15 @@ async function fetchRelease(id){
   const image = r.images?.[0]?.uri || "";
 
   const formatText = JSON.stringify(r.formats || []).toLowerCase();
+
   const colors = ["red","blue","green","yellow","orange","purple","pink","white","clear","gold","silver","smoke","marble","splatter"];
   const found = colors.filter(c => formatText.includes(c));
   const color = found.length ? found.join(" / ") : "Black";
 
-  let basePrice = priceMap[barcode] || 20;
-  let stock = stockMap[barcode] ?? 0;
+  const cost = priceMap[barcode] || 20;
+  const stock = stockMap[barcode] ?? 0;
+
+  const finalPrice = calculatePrice(cost);
 
   return {
     id,
@@ -129,7 +148,7 @@ async function fetchRelease(id){
     image,
     barcode,
     color,
-    basePrice,
+    basePrice: finalPrice,
     stock
   };
 }
@@ -158,7 +177,7 @@ app.post("/search", async (req, res) => {
 });
 
 // ----------------------------
-// BULK START
+// BULK + HISTORY RESTORED
 // ----------------------------
 app.post("/bulk-start", (req,res)=>{
   const { items } = req.body;
@@ -171,13 +190,8 @@ app.post("/bulk-start", (req,res)=>{
   res.json({ jobId });
 });
 
-// ----------------------------
-// BULK PROCESS
-// ----------------------------
 async function processBulk(jobId, items){
-
   for (let i=0;i<items.length;i++){
-
     const barcode = items[i];
 
     const data = await safeFetch(
@@ -205,7 +219,6 @@ async function processBulk(jobId, items){
   }
 }
 
-// ----------------------------
 app.get("/bulk-status/:id", (req,res)=>{
   const job = jobs[req.params.id];
   if (!job) return res.json({});
@@ -216,47 +229,11 @@ app.get("/bulk-status/:id", (req,res)=>{
   });
 });
 
-// ----------------------------
-// IMPORT
-// ----------------------------
-app.post("/import",(req,res)=>{
-  const items = req.body.items || [];
-
-  items.forEach(i=>{
-    if (!inventorySet.has(i.id)){
-      inventorySet.add(i.id);
-      queue.push(i);
-    }
-  });
-
-  res.json({ success:true });
-});
-
-// ----------------------------
-// PROCESS QUEUE
-// ----------------------------
-async function processQueue(){
-  if (!queue.length) return;
-
-  const job = queue.shift();
-  const data = await fetchRelease(job.id);
-  if (!data) return;
-
-  history.push(data);
-
-  console.log("📦 Added:", data.title);
-}
-
-setInterval(processQueue,1000);
-
-// ----------------------------
-// HISTORY (RESTORED)
-// ----------------------------
 app.get("/history", (req, res) => {
   res.json({ history });
 });
 
 // ----------------------------
 app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 FULL SYSTEM RESTORED");
+  console.log("🚀 PRICING RULE ACTIVE");
 });
