@@ -16,36 +16,40 @@ let inventorySet = new Set();
 let jobs = {};
 
 let priceMap = {};
-let stockMap = {}; // 🔥 NEW
+let stockMap = {};
+let shopifyMap = {}; // UPC → Shopify inventory_item_id
 
 // ----------------------------
-// LOAD CSV
+// LOAD CSV FUNCTION
 // ----------------------------
-fs.createReadStream("pricing.csv")
-  .pipe(csv())
-  .on("data", (row) => {
+function loadCSV() {
+  priceMap = {};
+  stockMap = {};
 
-    const upc = row.UPC?.toString().replace(/\D/g, "");
+  fs.createReadStream("pricing.csv")
+    .pipe(csv())
+    .on("data", (row) => {
+      const upc = row.UPC?.toString().replace(/\D/g, "");
+      if (!upc) return;
 
-    if (!upc) return;
+      if (row.Price) {
+        priceMap[upc] = parseFloat(row.Price);
+      }
 
-    // PRICE
-    if (row.Price) {
-      priceMap[upc] = parseFloat(row.Price);
-    }
+      if (row.QtyInStock !== undefined) {
+        stockMap[upc] = parseInt(row.QtyInStock) || 0;
+      }
+    })
+    .on("end", () => {
+      console.log("🔄 CSV Reloaded:", Object.keys(stockMap).length);
+    });
+}
 
-    // STOCK
-    if (row.QtyInStock !== undefined) {
-      stockMap[upc] = parseInt(row.QtyInStock) || 0;
-    }
+// initial load
+loadCSV();
 
-  })
-  .on("end", () => {
-    console.log("✅ CSV Loaded:",
-      "Prices:", Object.keys(priceMap).length,
-      "Stock:", Object.keys(stockMap).length
-    );
-  });
+// 🔥 reload every 60 seconds
+setInterval(loadCSV, 60000);
 
 // ----------------------------
 // PRICING MULTIPLIER
@@ -79,32 +83,18 @@ async function fetchRelease(id){
 
     const barcode = r.identifiers?.find(i => i.type === "Barcode")?.value?.replace(/\D/g, "");
 
-    // PRICE
     let basePrice = 20;
+    if (barcode && priceMap[barcode]) basePrice = priceMap[barcode];
 
-    if (barcode && priceMap[barcode]) {
-      basePrice = priceMap[barcode];
-    } else {
-      try {
-        const stats = await fetch(`https://api.discogs.com/marketplace/stats/${id}?token=${process.env.DISCOGS_TOKEN}`).then(r=>r.json());
-        basePrice = stats.median_price || stats.lowest_price || 20;
-      } catch {}
-    }
-
-    // STOCK
     let stock = 0;
-    if (barcode && stockMap[barcode] !== undefined) {
-      stock = stockMap[barcode];
-    }
+    if (barcode && stockMap[barcode] !== undefined) stock = stockMap[barcode];
 
     return {
       id,
       artist,
       title: artist + " - " + title,
-      year: r.year,
-      country: r.country,
       image: r.images?.[0]?.uri,
-      color: "Black",
+      barcode,
       basePrice,
       stock
     };
@@ -118,7 +108,6 @@ async function fetchRelease(id){
 // SEARCH
 // ----------------------------
 app.post("/search", async (req, res) => {
-
   const { barcode } = req.body;
 
   try {
@@ -143,19 +132,28 @@ app.post("/search", async (req, res) => {
 });
 
 // ----------------------------
-// IMPORT
+// IMPORT (BLOCK IF 0 STOCK)
 // ----------------------------
 app.post("/import",(req,res)=>{
   const items = req.body.items || [];
 
+  let blocked = [];
+
   items.forEach(i=>{
+    const stock = stockMap[i.barcode] || 0;
+
+    if (stock <= 0) {
+      blocked.push(i.id);
+      return;
+    }
+
     if (!inventorySet.has(i.id)) {
       inventorySet.add(i.id);
       queue.push(i);
     }
   });
 
-  res.json({ success:true });
+  res.json({ success:true, blocked });
 });
 
 // ----------------------------
@@ -166,40 +164,67 @@ async function createShopifyProduct(item) {
   const store = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_TOKEN;
 
-  try {
+  const res = await fetch(`https://${store}/admin/api/2024-01/products.json`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": token
+    },
+    body: JSON.stringify({
+      product: {
+        title: item.title,
+        variants: [{
+          price: item.price,
+          inventory_quantity: item.stock,
+          inventory_management: "shopify"
+        }],
+        images: item.image ? [{ src: item.image }] : []
+      }
+    })
+  });
 
-    const res = await fetch(`https://${store}/admin/api/2024-01/products.json`, {
+  const data = await res.json();
+
+  if (data.product) {
+    const variant = data.product.variants[0];
+    shopifyMap[item.barcode] = variant.inventory_item_id;
+  }
+}
+
+// ----------------------------
+// SYNC INVENTORY TO SHOPIFY
+// ----------------------------
+async function syncInventory(){
+
+  const store = process.env.SHOPIFY_STORE;
+  const token = process.env.SHOPIFY_TOKEN;
+
+  for (const upc in shopifyMap){
+
+    const inventory_item_id = shopifyMap[upc];
+    const qty = stockMap[upc] || 0;
+
+    await fetch(`https://${store}/admin/api/2024-01/inventory_levels/set.json`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Shopify-Access-Token": token
       },
       body: JSON.stringify({
-        product: {
-          title: item.title,
-          body_html: `${item.artist}<br/>${item.color}`,
-          variants: [{
-            price: item.price,
-            inventory_quantity: item.stock,
-            inventory_management: "shopify"
-          }],
-          images: item.image ? [{ src: item.image }] : []
-        }
+        location_id: process.env.SHOPIFY_LOCATION_ID,
+        inventory_item_id,
+        available: qty
       })
     });
 
-    const data = await res.json();
-
-    if (!res.ok) {
-      console.log("❌ Shopify error:", data);
-    } else {
-      console.log("✅ Shopify created:", data.product.id);
-    }
-
-  } catch (e) {
-    console.log("Shopify crash:", e.message);
+    await sleep(100);
   }
+
+  console.log("🔄 Shopify inventory synced");
 }
+
+// 🔥 sync every 60 seconds
+setInterval(syncInventory, 60000);
 
 // ----------------------------
 // PROCESS QUEUE
@@ -224,7 +249,7 @@ async function processQueue(){
 
   await createShopifyProduct(item);
 
-  console.log("📦 Added:", item.title, "|", price, "| Stock:", item.stock);
+  console.log("📦 Added:", item.title, "| Stock:", item.stock);
 }
 
 setInterval(processQueue,1000);
@@ -237,5 +262,32 @@ app.get("/history", (req, res) => {
 });
 
 // ----------------------------
+// ----------------------------
+// ----------------------------
+// GET SHOPIFY LOCATIONS
+// ----------------------------
+app.get("/locations", async (req, res) => {
+
+  const store = process.env.SHOPIFY_STORE;
+  const token = process.env.SHOPIFY_TOKEN;
+
+  try {
+    const response = await fetch(`https://${store}/admin/api/2024-01/locations.json`, {
+      headers: {
+        "X-Shopify-Access-Token": token
+      }
+    });
+
+    const data = await response.json();
+
+    res.json(data);
+
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
+// ----------------------------
 app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 POS RUNNING (CSV PRICE + INVENTORY)");
+  console.log("🚀 POS RUNNING (LIVE INVENTORY)");
+});
