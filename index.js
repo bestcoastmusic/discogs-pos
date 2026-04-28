@@ -260,6 +260,41 @@ async function upsertProduct(item){
     return;
   }
 
+  await fetch(
+    `https://${store}/admin/api/2024-01/inventory_levels/connect.json`,
+    {
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "X-Shopify-Access-Token": token
+      },
+      body: JSON.stringify({
+        location_id: LOCATION_ID,
+        inventory_item_id: variant.inventory_item_id
+      })
+    }
+  );
+
+  const inv = await fetch(
+    `https://${store}/admin/api/2024-01/inventory_levels/set.json`,
+    {
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "X-Shopify-Access-Token": token
+      },
+      body: JSON.stringify({
+        location_id: LOCATION_ID,
+        inventory_item_id: variant.inventory_item_id,
+        available: item.stock
+      })
+    }
+  );
+
+  const invRes = await inv.json();
+
+  console.log("📦 INVENTORY SET RESPONSE:", JSON.stringify(invRes));
+}
   // CONNECT INVENTORY
   await fetch(
     `https://${store}/admin/api/2024-01/inventory_levels/connect.json`,
