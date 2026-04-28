@@ -14,7 +14,8 @@ let jobs = {};
 let dataMap = {};
 
 const MIN_PRICE = 14.99;
-const LOCATION_ID = 113713512818;
+const DEFAULT_LOCATION_ID = 113713512818;
+const LOCATION_ID = Number(process.env.SHOPIFY_LOCATION_ID || DEFAULT_LOCATION_ID);
 const LOCAL_PRICING_FILE = path.join(__dirname, "pricing.csv");
 
 // ----------------------------
@@ -152,15 +153,19 @@ async function fetchRelease(id, barcode){
 
   const artist = r.artists?.[0]?.name || "";
   const title = r.title || "";
-
-  const match = findMatch(barcode);
+  const releaseBarcode = normalizeBarcode(
+    r.identifiers?.find(i => String(i.type || "").toLowerCase().includes("barcode"))?.value
+  );
+  const resolvedBarcode = normalizeBarcode(barcode) || releaseBarcode;
+  const match = findMatch(resolvedBarcode);
 
   if (!match){
-    console.log("⚠️ NO EXCEL MATCH:", normalizeBarcode(barcode));
+    console.log("⚠️ NO EXCEL MATCH:", resolvedBarcode);
   }
 
   return {
     id,
+    barcode: resolvedBarcode,
     title: `${artist} - ${title}`,
     description: match?.extras || "",
     image: r.images?.[0]?.uri || "",
@@ -195,7 +200,7 @@ async function upsertProduct(item){
   const store = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_TOKEN;
 
-  console.log("📦 SENDING:", item.title, "STOCK:", item.stock);
+  console.log("📦 SENDING:", item.title, "BARCODE:", item.barcode, "STOCK:", item.stock, "LOCATION:", LOCATION_ID);
 
   const r = await fetch(
     `https://${store}/admin/api/2024-01/products.json`,
@@ -212,10 +217,12 @@ async function upsertProduct(item){
           product_type: item.genre,
           tags: `${item.genre}, ${item.color}`,
           variants:[{
-  	    price: item.basePrice,
-  	    inventory_management: "shopify",
-  	    inventory_policy: "deny",
-  	    tracked: true
+	  	    price: item.basePrice,
+	  	    barcode: item.barcode || undefined,
+	  	    sku: item.barcode || undefined,
+	  	    inventory_management: "shopify",
+	  	    inventory_policy: "deny",
+	  	    tracked: true
     }]
   }
 })
@@ -231,7 +238,7 @@ async function upsertProduct(item){
 
   const variant = created.product.variants[0];
 
-  await fetch(
+  const connectRes = await fetch(
     `https://${store}/admin/api/2024-01/inventory_levels/connect.json`,
     {
       method:"POST",
@@ -246,7 +253,12 @@ async function upsertProduct(item){
     }
   );
 
-  await fetch(
+  const connectData = await connectRes.json().catch(() => ({}));
+  if (!connectRes.ok){
+    console.log("❌ CONNECT ERROR:", connectData);
+  }
+
+  const setRes = await fetch(
     `https://${store}/admin/api/2024-01/inventory_levels/set.json`,
     {
       method:"POST",
@@ -261,6 +273,14 @@ async function upsertProduct(item){
       })
     }
   );
+
+  const setData = await setRes.json().catch(() => ({}));
+  if (!setRes.ok){
+    console.log("❌ SET ERROR:", setData);
+    return;
+  }
+
+  console.log("✅ INVENTORY SET:", setData.inventory_level || { inventory_item_id: variant.inventory_item_id, location_id: LOCATION_ID, available: item.stock });
 }
 
 // ----------------------------
@@ -292,4 +312,5 @@ app.get("/history",(req,res)=>{
 // ----------------------------
 app.listen(process.env.PORT||10000,()=>{
   console.log("🚀 CLEAN STABLE BUILD");
+  console.log("📍 Inventory location:", LOCATION_ID);
 });
