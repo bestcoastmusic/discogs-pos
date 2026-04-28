@@ -216,6 +216,7 @@ async function upsertProduct(item){
           body_html: item.description,
           product_type: item.genre,
           tags: `${item.genre}, ${item.color}`,
+          images: item.image ? [{ src: item.image }] : [],
           variants:[{
 	  	    price: item.basePrice,
 	  	    barcode: item.barcode || undefined,
