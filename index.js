@@ -20,6 +20,27 @@ let stockMap = {};
 let shopifyMap = {};
 
 // ----------------------------
+// SAFE FETCH (NO CRASH)
+// ----------------------------
+async function safeFetch(url){
+  try {
+    const res = await fetch(url);
+    const text = await res.text();
+
+    try {
+      return JSON.parse(text);
+    } catch {
+      console.log("⚠️ Bad JSON:", text.slice(0,100));
+      return {};
+    }
+
+  } catch (e){
+    console.log("❌ Fetch failed:", e.message);
+    return {};
+  }
+}
+
+// ----------------------------
 // LOAD CSV
 // ----------------------------
 function loadCSV() {
@@ -58,60 +79,41 @@ const conditionMultiplier = {
 // FETCH RELEASE
 // ----------------------------
 async function fetchRelease(id){
-  try {
-    const r = await fetch(`https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`)
-      .then(r=>r.json());
 
-    const artist = r.artists?.[0]?.name || "Unknown";
-    const title = r.title || "Unknown";
+  const r = await safeFetch(`https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`);
 
-    // ✅ YEAR + COUNTRY
-    const year = r.year || null;
-    const country = r.country || null;
+  const artist = r.artists?.[0]?.name || "Unknown";
+  const title = r.title || "Unknown";
 
-    // ✅ IMAGE
-    const image = r.images?.[0]?.uri || "";
+  const year = r.year || "";
+  const country = r.country || "";
+  const image = r.images?.[0]?.uri || "";
 
-    // ✅ BARCODE (cleaned)
-    const barcode = r.identifiers
-      ?.find(i => i.type === "Barcode")
-      ?.value?.replace(/\D/g, "");
+  const barcode = r.identifiers
+    ?.find(i => i.type === "Barcode")
+    ?.value?.replace(/\D/g, "");
 
-    // ✅ COLOR DETECTION (FIXED)
-    const formatText = JSON.stringify(r.formats || []).toLowerCase();
+  const formatText = JSON.stringify(r.formats || []).toLowerCase();
 
-    const colors = [
-      "red","blue","green","yellow","orange",
-      "purple","pink","white","clear","gold",
-      "silver","smoke","marble","splatter"
-    ];
+  const colors = ["red","blue","green","yellow","orange","purple","pink","white","clear","gold","silver","smoke","marble","splatter"];
+  const found = colors.filter(c => formatText.includes(c));
 
-    const foundColors = colors.filter(c => formatText.includes(c));
+  const color = found.length ? found.join(" / ") : "Black";
 
-    const color = foundColors.length
-      ? foundColors.map(c => c[0].toUpperCase() + c.slice(1)).join(" / ")
-      : "Black";
+  let basePrice = priceMap[barcode] || 20;
+  let stock = stockMap[barcode] ?? 0;
 
-    // ✅ PRICE + STOCK
-    let basePrice = priceMap[barcode] || 20;
-    let stock = stockMap[barcode] ?? 0;
-
-    return {
-      id,
-      title: `${artist} - ${title}`,
-      year,
-      country,
-      image,
-      barcode,
-      color,
-      basePrice,
-      stock
-    };
-
-  } catch (e) {
-    console.log("Fetch error:", e.message);
-    return null;
-  }
+  return {
+    id,
+    title: `${artist} - ${title}`,
+    year,
+    country,
+    image,
+    barcode,
+    color,
+    basePrice,
+    stock
+  };
 }
 
 // ----------------------------
@@ -121,29 +123,24 @@ app.post("/search", async (req, res) => {
 
   const { barcode } = req.body;
 
-  try {
-    const data = await fetch(
-      `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
-    ).then(r => r.json());
+  const data = await safeFetch(
+    `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
+  );
 
-    const results = (data.results || []).slice(0, 5);
+  const results = (data.results || []).slice(0, 5);
 
-    const formatted = [];
+  const formatted = [];
 
-    for (const r of results) {
-      const full = await fetchRelease(r.id);
-      if (full) formatted.push(full);
-    }
-
-    res.json({ results: formatted });
-
-  } catch {
-    res.json({ results: [] });
+  for (const r of results) {
+    const full = await fetchRelease(r.id);
+    if (full) formatted.push(full);
   }
+
+  res.json({ results: formatted });
 });
 
 // ----------------------------
-// 🔥 BULK START (FIXED)
+// BULK
 // ----------------------------
 app.post("/bulk-start", async (req,res)=>{
   const { items } = req.body;
@@ -156,45 +153,37 @@ app.post("/bulk-start", async (req,res)=>{
   res.json({ jobId });
 });
 
-// ----------------------------
-// BULK PROCESS
-// ----------------------------
 async function processBulk(jobId, items){
 
   for (let i=0;i<items.length;i++){
 
     const barcode = items[i];
 
-    try {
+    const data = await safeFetch(
+      `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
+    );
 
-      const data = await fetch(
-        `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
-      ).then(r=>r.json());
+    const top = (data.results||[]).slice(0,5);
 
-      const top = (data.results||[]).slice(0,5);
+    let options = [];
 
-      let options = [];
+    for (const r of top){
+      const full = await fetchRelease(r.id);
+      if (full) options.push(full);
+    }
 
-      for (const r of top){
-        const full = await fetchRelease(r.id);
-        if (full) options.push(full);
-      }
-
-      jobs[jobId].results.push({
-        barcode,
-        options,
-        best: options[0]
-      });
-
-    } catch {}
+    jobs[jobId].results.push({
+      barcode,
+      options,
+      best: options[0]
+    });
 
     jobs[jobId].done++;
+
+    await new Promise(r=>setTimeout(r,150)); // prevent rate limit
   }
 }
 
-// ----------------------------
-// BULK STATUS
-// ----------------------------
 app.get("/bulk-status/:id", (req,res)=>{
   const job = jobs[req.params.id];
   if (!job) return res.json({});
@@ -206,33 +195,23 @@ app.get("/bulk-status/:id", (req,res)=>{
 });
 
 // ----------------------------
-// IMPORT (BLOCK IF 0 STOCK)
+// IMPORT
 // ----------------------------
 app.post("/import",(req,res)=>{
   const items = req.body.items || [];
 
-  let blocked = [];
-
   items.forEach(i=>{
-
-    const stock = stockMap[i.barcode] || 0;
-
-    if (stock <= 0){
-      blocked.push(i.id);
-      return;
-    }
-
     if (!inventorySet.has(i.id)){
       inventorySet.add(i.id);
       queue.push(i);
     }
   });
 
-  res.json({ success:true, blocked });
+  res.json({ success:true });
 });
 
 // ----------------------------
-// SHOPIFY CREATE
+// SHOPIFY
 // ----------------------------
 async function createShopifyProduct(item){
 
@@ -262,6 +241,8 @@ async function createShopifyProduct(item){
 
   if (data.product){
     shopifyMap[item.barcode] = data.product.variants[0].inventory_item_id;
+  } else {
+    console.log("❌ Shopify error:", data);
   }
 }
 
@@ -303,5 +284,5 @@ app.get("/history", (req, res) => {
 
 // ----------------------------
 app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 POS RUNNING (BULK FIXED)");
+  console.log("🚀 POS RUNNING (STABLE)");
 });
