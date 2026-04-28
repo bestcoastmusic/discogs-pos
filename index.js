@@ -34,7 +34,7 @@ const HISTORY_LIMIT = 60;
 const SHOPIFY_API_VERSION = "2024-01";
 const SHOPIFY_REQUEST_DELAY_MS = 550;
 const DISCOGS_REQUEST_DELAY_MS = 250;
-const DISCOGS_FETCH_GAP_MS = 900;
+const DISCOGS_FETCH_GAP_MS = 1200;
 const DISCOGS_BULK_OPTION_LIMIT = 3;
 const COUNTRY_PREFERENCE = [
   "US",
@@ -51,6 +51,7 @@ let shopifyVariantCache = {
   variants: []
 };
 let lastDiscogsRequestAt = 0;
+let discogsRequestQueue = Promise.resolve();
 
 // ----------------------------
 function normalizeBarcode(val){
@@ -103,6 +104,26 @@ function sleep(ms){
 
 function ensureDirForFile(filePath){
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
+}
+
+async function reserveDiscogsRequestSlot(){
+  const previous = discogsRequestQueue;
+  let releaseQueueSlot = () => {};
+
+  discogsRequestQueue = new Promise(resolve => {
+    releaseQueueSlot = resolve;
+  });
+
+  await previous;
+
+  const waitMs = Math.max(0, (lastDiscogsRequestAt + DISCOGS_FETCH_GAP_MS) - Date.now());
+  if (waitMs){
+    await sleep(waitMs);
+  }
+
+  lastDiscogsRequestAt = Date.now();
+
+  return releaseQueueSlot;
 }
 
 function loadHistoryFromDisk(){
@@ -420,21 +441,23 @@ async function safeFetch(url){
   const maxAttempts = isDiscogs ? 3 : 1;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1){
+    let releaseDiscogsSlot = null;
     try {
       if (isDiscogs){
-        const waitMs = Math.max(0, (lastDiscogsRequestAt + DISCOGS_FETCH_GAP_MS) - Date.now());
-        if (waitMs){
-          await sleep(waitMs);
-        }
-        lastDiscogsRequestAt = Date.now();
+        releaseDiscogsSlot = await reserveDiscogsRequestSlot();
       }
 
       const res = await fetch(url);
       const data = await res.json().catch(() => ({}));
 
+      if (releaseDiscogsSlot){
+        releaseDiscogsSlot();
+        releaseDiscogsSlot = null;
+      }
+
       if (res.status === 429 && isDiscogs && attempt < maxAttempts){
         const retryAfterSeconds = Number(res.headers.get("retry-after") || 2);
-        const retryWaitMs = Math.max(1500, retryAfterSeconds * 1000);
+        const retryWaitMs = Math.max(2500, retryAfterSeconds * 1000);
         console.log("⏳ Discogs rate limit hit, retrying in", retryWaitMs, "ms");
         await sleep(retryWaitMs);
         continue;
@@ -450,6 +473,11 @@ async function safeFetch(url){
 
       return data;
     } catch (err){
+      if (releaseDiscogsSlot){
+        releaseDiscogsSlot();
+        releaseDiscogsSlot = null;
+      }
+
       if (attempt >= maxAttempts){
         return {
           __failed: true,
