@@ -1,4 +1,4 @@
-console.log("POS UI FULL");
+console.log("POS FIXED BULK");
 
 // ----------------------------
 // INIT
@@ -13,16 +13,12 @@ window.onload = function(){
 };
 
 // ----------------------------
-// SCAN (FULL POS)
+// SCAN
 // ----------------------------
 async function scan(){
 
   const barcode = document.getElementById("barcode").value;
-
-  if (!barcode){
-    alert("Enter barcode");
-    return;
-  }
+  if (!barcode) return alert("Enter barcode");
 
   const res = await fetch("/search", {
     method:"POST",
@@ -35,75 +31,12 @@ async function scan(){
   const box = document.getElementById("results");
   box.innerHTML = "";
 
-  if (!data.results || data.results.length === 0){
+  if (!data.results?.length){
     box.innerHTML = "<p>No results</p>";
     return;
   }
 
-  const options = data.results;
-  const best = options[0];
-
-  const div = document.createElement("div");
-  div.className = "card";
-
-  div.innerHTML = `
-    <img src="${best.image || ""}" width="60"/>
-    <b>${best.title}</b><br/>
-    ${best.year || ""} • ${best.country || ""}<br/>
-    <span style="color:#00e676">${best.color || "Black"} Vinyl</span>
-  `;
-
-  // VARIANTS
-  const select = document.createElement("select");
-
-  options.forEach(opt=>{
-    const o = document.createElement("option");
-    o.value = opt.id;
-
-    o.textContent =
-      (opt.id === best.id ? "⭐ " : "") +
-      `${opt.title} (${opt.year || "?"} • ${opt.country || "?"} • ${opt.color || "Black"})`;
-
-    select.appendChild(o);
-  });
-
-  // CONDITION
-  const cond = document.createElement("select");
-
-  ["M","NM","VG+","VG","G"].forEach(c=>{
-    const o = document.createElement("option");
-    o.value = c;
-    o.textContent = c;
-    cond.appendChild(o);
-  });
-
-  // ADD
-  const btn = document.createElement("button");
-  btn.textContent = "Add";
-
-  btn.onclick = async ()=>{
-    const res = await fetch("/import", {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({
-        items:[{ id: select.value, condition: cond.value }]
-      })
-    });
-
-    const data = await res.json();
-
-    if (data.duplicates && data.duplicates.length){
-      alert("Duplicate");
-    } else {
-      alert("Added");
-    }
-  };
-
-  div.appendChild(select);
-  div.appendChild(cond);
-  div.appendChild(btn);
-
-  box.appendChild(div);
+  renderCard(data.results, box);
 }
 
 // ----------------------------
@@ -131,17 +64,33 @@ async function startBulk(){
       <div id="progressBar" style="height:20px;width:0%;background:#00e676;border-radius:10px;"></div>
     </div>
     <p id="progressText">0%</p>
+    <div id="bulkResults"></div>
   `;
 
   pollBulk(jobId);
 }
 
 async function pollBulk(jobId){
+
   const res = await fetch("/bulk-status/" + jobId);
   const data = await res.json();
 
   document.getElementById("progressBar").style.width = data.progress + "%";
   document.getElementById("progressText").innerText = data.progress + "%";
+
+  const container = document.getElementById("bulkResults");
+  container.innerHTML = "";
+
+  data.results.forEach(item=>{
+    if (!item.options || item.options.length === 0) return;
+
+    const card = document.createElement("div");
+    card.className = "card";
+
+    renderCard(item.options, card);
+
+    container.appendChild(card);
+  });
 
   if (data.progress < 100){
     setTimeout(()=>pollBulk(jobId), 1000);
@@ -149,62 +98,114 @@ async function pollBulk(jobId){
 }
 
 // ----------------------------
-// HISTORY
+// RENDER CARD (FIXED)
 // ----------------------------
-async function loadHistory(){
-  try {
-    const res = await fetch("/history");
-    const data = await res.json();
+function renderCard(options, container){
 
-    const box = document.getElementById("history");
-    if (!box) return;
+  const best = options[0];
 
-    box.innerHTML = "<h3>Recent Adds</h3>";
+  // IMAGE + INFO
+  const info = document.createElement("div");
+  info.innerHTML = `
+    <img src="${best.image || ""}" width="60"/>
+    <b>${best.title}</b><br/>
+    ${best.year || ""} • ${best.country || ""}<br/>
+    <span style="color:#00e676">${best.color || "Black"} Vinyl</span>
+  `;
 
-    data.history.slice().reverse().forEach(item=>{
-      const div = document.createElement("div");
-      div.className = "card";
+  // VARIANT SELECT
+  const select = document.createElement("select");
 
-      div.innerHTML = `
-        <b>${item.title}</b><br/>
-        $${item.price} • ${item.condition}<br/>
-        <span style="color:#00e676">${item.color}</span>
-      `;
+  options.forEach(opt=>{
+    const o = document.createElement("option");
+    o.value = opt.id;
 
-      box.appendChild(div);
+    o.textContent =
+      (opt.id === best.id ? "⭐ " : "") +
+      `${opt.title} (${opt.year || "?"} • ${opt.country || "?"} • ${opt.color || "Black"})`;
+
+    select.appendChild(o);
+  });
+
+  // CONDITION
+  const cond = document.createElement("select");
+
+  ["M","NM","VG+","VG","G"].forEach(c=>{
+    const o = document.createElement("option");
+    o.value = c;
+    o.textContent = c;
+    cond.appendChild(o);
+  });
+
+  // ADD BUTTON
+  const btn = document.createElement("button");
+  btn.textContent = "Add";
+
+  btn.onclick = async ()=>{
+    await fetch("/import", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({
+        items:[{ id: select.value, condition: cond.value }]
+      })
     });
 
-  } catch {}
+    alert("Added");
+  };
+
+  container.appendChild(info);
+  container.appendChild(select);
+  container.appendChild(cond);
+  container.appendChild(btn);
 }
 
 // ----------------------------
-// CAMERA (FULL)
+// HISTORY
+// ----------------------------
+async function loadHistory(){
+  const res = await fetch("/history");
+  const data = await res.json();
+
+  const box = document.getElementById("history");
+  if (!box) return;
+
+  box.innerHTML = "<h3>Recent Adds</h3>";
+
+  data.history.slice().reverse().forEach(item=>{
+    const div = document.createElement("div");
+    div.className = "card";
+
+    div.innerHTML = `
+      <b>${item.title}</b><br/>
+      $${item.price} • ${item.condition}<br/>
+      <span style="color:#00e676">${item.color}</span>
+    `;
+
+    box.appendChild(div);
+  });
+}
+
+// ----------------------------
+// CAMERA
 // ----------------------------
 let stream;
 
 async function startCamera(){
-
   const video = document.getElementById("camera");
 
   video.style.display = "block";
 
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "environment" }
-    });
+  stream = await navigator.mediaDevices.getUserMedia({
+    video:{ facingMode:"environment" }
+  });
 
-    video.srcObject = stream;
-    video.play();
+  video.srcObject = stream;
+  video.play();
 
-    scanFrame();
-
-  } catch {
-    alert("Camera not supported");
-  }
+  scanFrame();
 }
 
 async function scanFrame(){
-
   const video = document.getElementById("camera");
 
   if (video.readyState === video.HAVE_ENOUGH_DATA) {
@@ -215,19 +216,14 @@ async function scanFrame(){
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
 
-    ctx.drawImage(video, 0, 0);
+    ctx.drawImage(video,0,0);
 
-    if ("BarcodeDetector" in window) {
-
-      const detector = new BarcodeDetector({
-        formats: ["ean_13","upc_a"]
-      });
-
+    if ("BarcodeDetector" in window){
+      const detector = new BarcodeDetector({ formats:["ean_13","upc_a"] });
       const codes = await detector.detect(canvas);
 
       if (codes.length){
         document.getElementById("barcode").value = codes[0].rawValue;
-
         stopCamera();
         scan();
         return;
@@ -239,11 +235,10 @@ async function scanFrame(){
 }
 
 function stopCamera(){
-
   const video = document.getElementById("camera");
   video.style.display = "none";
 
   if (stream){
-    stream.getTracks().forEach(t => t.stop());
+    stream.getTracks().forEach(t=>t.stop());
   }
 }
