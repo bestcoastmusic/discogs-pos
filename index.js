@@ -5,7 +5,6 @@ const app = express();
 app.use(express.json());
 app.use(express.static("public"));
 
-// ----------------------------
 let queue = [];
 let history = [];
 let jobs = {};
@@ -15,11 +14,8 @@ const MIN_PRICE = 14.99;
 const LOCATION_ID = 113713512818;
 
 // ----------------------------
-// HELPERS (ALL INCLUDED NOW)
-// ----------------------------
 function clean(str){
   if (!str) return "";
-
   return str
     .replace(/\(.*?\)/g, "")
     .toLowerCase()
@@ -29,36 +25,30 @@ function clean(str){
 }
 
 function extractExtras(str){
-  const matches = String(str || "").match(/\(.*?\)/g);
-  return matches ? matches.join(" ") : "";
+  const m = String(str || "").match(/\(.*?\)/g);
+  return m ? m.join(" ") : "";
 }
 
 function calculatePrice(cost){
   if (!cost) return MIN_PRICE;
-
-  let price = Math.ceil(cost * 1.25) - 0.01;
-
-  if (price < MIN_PRICE) price = MIN_PRICE;
-
-  return price.toFixed(2);
+  let p = Math.ceil(cost * 1.25) - 0.01;
+  if (p < MIN_PRICE) p = MIN_PRICE;
+  return p.toFixed(2);
 }
 
-// ----------------------------
-// LOAD EXCEL
 // ----------------------------
 async function loadExcel(){
   try {
     const res = await fetch(process.env.CSV_URL);
     const buffer = await res.arrayBuffer();
 
-    const workbook = XLSX.read(buffer, { type: "buffer" });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const wb = XLSX.read(buffer, { type: "buffer" });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet);
 
     dataMap = {};
 
     rows.forEach(row => {
-
       const raw = row["Description"];
       const key = clean(raw);
 
@@ -82,8 +72,6 @@ async function loadExcel(){
 loadExcel();
 setInterval(loadExcel, 60000);
 
-// ----------------------------
-// MATCH (STRICT)
 // ----------------------------
 function findMatch(title){
   return dataMap[clean(title)] || null;
@@ -125,10 +113,7 @@ async function fetchRelease(id){
 }
 
 // ----------------------------
-// SEARCH
-// ----------------------------
 app.post("/search", async (req,res)=>{
-
   const { barcode } = req.body;
 
   const data = await safeFetch(
@@ -136,7 +121,6 @@ app.post("/search", async (req,res)=>{
   );
 
   const results = (data.results||[]).slice(0,5);
-
   const out = [];
 
   for (const r of results){
@@ -146,8 +130,6 @@ app.post("/search", async (req,res)=>{
   res.json({ results: out });
 });
 
-// ----------------------------
-// BULK
 // ----------------------------
 app.post("/bulk-start",(req,res)=>{
   const { items } = req.body;
@@ -161,7 +143,6 @@ app.post("/bulk-start",(req,res)=>{
 });
 
 async function processBulk(id, items){
-
   for (let i=0;i<items.length;i++){
 
     const barcode = items[i];
@@ -201,8 +182,6 @@ app.get("/bulk-status/:id",(req,res)=>{
 });
 
 // ----------------------------
-// SHOPIFY
-// ----------------------------
 async function upsertProduct(item){
 
   const store = process.env.SHOPIFY_STORE;
@@ -217,9 +196,98 @@ async function upsertProduct(item){
 
   const existing = data.products.find(p => p.title === item.title);
 
+  let variant;
+
   if (existing){
+    variant = existing.variants[0];
+  } else {
 
-    const v = existing.variants[0];
+    const r = await fetch(
+      `https://${store}/admin/api/2024-01/products.json`,
+      {
+        method:"POST",
+        headers:{
+          "Content-Type":"application/json",
+          "X-Shopify-Access-Token": token
+        },
+        body: JSON.stringify({
+          product:{
+            title: item.title,
+            body_html: item.description,
+            product_type: item.genre,
+            variants:[{
+              price: item.basePrice,
+              inventory_management:"shopify"
+            }],
+            images: item.image ? [{ src:item.image }] : []
+          }
+        })
+      }
+    );
 
-    await fetch(
-      `https
+    const created = await r.json();
+    variant = created.product.variants[0];
+  }
+
+  // 🔥 CONNECT + SET INVENTORY
+  await fetch(
+    `https://${store}/admin/api/2024-01/inventory_levels/connect.json`,
+    {
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "X-Shopify-Access-Token": token
+      },
+      body: JSON.stringify({
+        location_id: LOCATION_ID,
+        inventory_item_id: variant.inventory_item_id
+      })
+    }
+  );
+
+  await fetch(
+    `https://${store}/admin/api/2024-01/inventory_levels/set.json`,
+    {
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "X-Shopify-Access-Token": token
+      },
+      body: JSON.stringify({
+        location_id: LOCATION_ID,
+        inventory_item_id: variant.inventory_item_id,
+        available: item.stock
+      })
+    }
+  );
+}
+
+// ----------------------------
+app.post("/import",(req,res)=>{
+  (req.body.items||[]).forEach(i=>queue.push(i));
+  res.json({ success:true });
+});
+
+// ----------------------------
+async function processQueue(){
+  if (!queue.length) return;
+
+  const job = queue.shift();
+  const data = await fetchRelease(job.id);
+
+  history.push(data);
+
+  await upsertProduct(data);
+}
+
+setInterval(processQueue,1000);
+
+// ----------------------------
+app.get("/history",(req,res)=>{
+  res.json({ history });
+});
+
+// ----------------------------
+app.listen(process.env.PORT||10000,()=>{
+  console.log("🚀 SYNTAX FIX BUILD (INVENTORY FIX INCLUDED)");
+});
