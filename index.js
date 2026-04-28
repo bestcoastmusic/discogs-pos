@@ -6,8 +6,10 @@ const app = express();
 app.use(express.json());
 app.use(express.static("public"));
 
+// ----------------------------
 let queue = [];
 let history = [];
+let jobs = {};
 
 let dataMap = {};
 
@@ -15,7 +17,7 @@ const MIN_PRICE = 14.99;
 const LOCATION_ID = 113713512818;
 
 // ----------------------------
-// CLEAN
+// CLEAN / MATCH HELPERS
 // ----------------------------
 function clean(str){
   return String(str || "")
@@ -26,46 +28,26 @@ function clean(str){
     .trim();
 }
 
-// ----------------------------
-// EXTRAS
-// ----------------------------
 function extractExtras(str){
   const matches = String(str || "").match(/\(.*?\)/g);
   return matches ? matches.join(" ") : "";
 }
 
-// ----------------------------
-// 🎨 COLOR DETECTION
-// ----------------------------
 function detectColor(text){
-
-  const colors = [
-    "red","blue","green","yellow","orange","purple",
-    "pink","white","clear","gold","silver",
-    "smoke","marble","splatter"
-  ];
-
+  const colors = ["red","blue","green","yellow","orange","purple","pink","white","clear","gold","silver","smoke","marble","splatter"];
   const lower = String(text || "").toLowerCase();
-
   const found = colors.filter(c => lower.includes(c));
-
   if (found.length) return found.join(" / ");
-
   if (lower.includes("colored")) return "Colored Vinyl";
-
   return "Black";
 }
 
-// ----------------------------
 function calculatePrice(cost){
   if (!cost) return MIN_PRICE;
-
   let price = cost * 1.25;
   price = Math.ceil(price);
   price = price - 0.01;
-
   if (price < MIN_PRICE) price = MIN_PRICE;
-
   return price.toFixed(2);
 }
 
@@ -89,7 +71,6 @@ async function loadExcel(){
     dataMap = {};
 
     rows.forEach(row => {
-
       const rawTitle = row["Description"];
       const cleanTitle = clean(rawTitle);
 
@@ -102,7 +83,7 @@ async function loadExcel(){
         stock: parseInt(row["QtyInStock"]) || 0,
         genre: simplifyGenre(row["Genre"]),
         extras,
-        color: detectColor(extras) // 🔥 FROM EXCEL
+        color: detectColor(extras)
       };
     });
 
@@ -117,16 +98,14 @@ loadExcel();
 setInterval(loadExcel, 60000);
 
 // ----------------------------
-// MATCH
+// MATCHING (FIXED)
 // ----------------------------
 function findMatch(title){
 
   const key = clean(title);
 
-  // exact match first
   if (dataMap[key]) return dataMap[key];
 
-  // split into words (artist + album)
   const words = key.split(" ").filter(w => w.length > 2);
 
   let bestMatch = null;
@@ -140,7 +119,6 @@ function findMatch(title){
       if (k.includes(word)) score++;
     }
 
-    // require at least 2 matching words
     if (score > bestScore && score >= 2){
       bestScore = score;
       bestMatch = dataMap[k];
@@ -151,7 +129,16 @@ function findMatch(title){
 }
 
 // ----------------------------
-// FETCH RELEASE
+async function safeFetch(url){
+  try {
+    const res = await fetch(url);
+    const text = await res.text();
+    return JSON.parse(text);
+  } catch {
+    return {};
+  }
+}
+
 // ----------------------------
 async function fetchRelease(id){
 
@@ -166,8 +153,7 @@ async function fetchRelease(id){
 
   const image = r.images?.[0]?.uri || "";
 
-  // fallback color from discogs if needed
-  const formatText = JSON.stringify(r.formats || []).toLowerCase();
+  const formatText = JSON.stringify(r.formats || "").toLowerCase();
   const discogsColor = detectColor(formatText);
 
   return {
@@ -183,7 +169,7 @@ async function fetchRelease(id){
 }
 
 // ----------------------------
-// SEARCH
+// SEARCH (SCAN BUTTON)
 // ----------------------------
 app.post("/search", async (req, res) => {
 
@@ -206,7 +192,69 @@ app.post("/search", async (req, res) => {
 });
 
 // ----------------------------
-// UPSERT
+// BULK (PROGRESS FIXED)
+// ----------------------------
+app.post("/bulk-start", (req,res)=>{
+  const { items } = req.body;
+
+  const jobId = Date.now().toString();
+  jobs[jobId] = { total: items.length, done: 0, results: [] };
+
+  processBulk(jobId, items);
+
+  res.json({ jobId });
+});
+
+async function processBulk(jobId, items){
+
+  for (let i = 0; i < items.length; i++){
+
+    const barcode = items[i];
+
+    const data = await safeFetch(
+      `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
+    );
+
+    const top = (data.results || []).slice(0,5);
+
+    let options = [];
+
+    for (const r of top){
+      const full = await fetchRelease(r.id);
+      if (full) options.push(full);
+    }
+
+    jobs[jobId].results.push({
+      barcode,
+      options,
+      best: options[0] || null
+    });
+
+    jobs[jobId].done = i + 1;
+
+    await new Promise(r => setTimeout(r,120));
+  }
+}
+
+app.get("/bulk-status/:id", (req,res)=>{
+  const job = jobs[req.params.id];
+
+  if (!job){
+    return res.json({ progress: 0, results: [] });
+  }
+
+  const progress = job.total
+    ? Math.floor((job.done / job.total) * 100)
+    : 0;
+
+  res.json({
+    progress,
+    results: job.results
+  });
+});
+
+// ----------------------------
+// SHOPIFY UPSERT
 // ----------------------------
 async function upsertProduct(item){
 
@@ -216,19 +264,13 @@ async function upsertProduct(item){
   const res = await fetch(
     `https://${store}/admin/api/2024-01/products.json?limit=250`,
     {
-      headers: {
-        "X-Shopify-Access-Token": token
-      }
+      headers: { "X-Shopify-Access-Token": token }
     }
   );
 
   const data = await res.json();
 
-  const existing = data.products.find(p =>
-    p.title === item.title
-  );
-
-  const tags = `${item.genre}, ${item.color}`; // 🔥 TAG COLOR
+  const existing = data.products.find(p => p.title === item.title);
 
   if (existing){
 
@@ -274,7 +316,7 @@ async function upsertProduct(item){
           title: item.title,
           body_html: item.description,
           product_type: item.genre,
-          tags: tags,
+          tags: `${item.genre}, ${item.color}`,
           variants:[{
             price: item.basePrice,
             inventory_management:"shopify"
@@ -303,12 +345,16 @@ async function upsertProduct(item){
 }
 
 // ----------------------------
+// IMPORT
+// ----------------------------
 app.post("/import",(req,res)=>{
   const items = req.body.items || [];
   items.forEach(i=> queue.push(i));
   res.json({ success:true });
 });
 
+// ----------------------------
+// QUEUE
 // ----------------------------
 async function processQueue(){
 
@@ -325,6 +371,13 @@ async function processQueue(){
 setInterval(processQueue,1000);
 
 // ----------------------------
+// HISTORY (RESTORED)
+// ----------------------------
+app.get("/history",(req,res)=>{
+  res.json({ history });
+});
+
+// ----------------------------
 app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 COLOR + MATCH SYSTEM ACTIVE");
+  console.log("🚀 FULL SYSTEM RESTORED CLEAN BUILD");
 });
