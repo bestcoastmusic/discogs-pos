@@ -6,6 +6,7 @@ window.onload = function(){
   document.getElementById("scanBtn").onclick = scan;
   document.getElementById("bulkBtn").onclick = startBulk;
   document.getElementById("cameraBtn").onclick = startCamera;
+  document.getElementById("syncNowBtn").onclick = runInventorySync;
   document.getElementById("barcode").addEventListener("keydown", event => {
     if (event.key === "Enter") scan();
   });
@@ -17,7 +18,9 @@ window.onload = function(){
   );
 
   loadHistory();
+  loadSyncStatus();
   setInterval(loadHistory, 2000);
+  setInterval(loadSyncStatus, 5000);
 };
 
 function formatMoney(value){
@@ -29,6 +32,20 @@ function titleCase(value){
   const text = String(value || "").trim();
   if (!text) return "";
   return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function formatTimestamp(value){
+  if (!value) return "Never";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Never";
+
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  });
 }
 
 function renderEmptyState(container, title, copy){
@@ -53,6 +70,95 @@ function buildOptionLabel(option, bestId){
   const parts = [option.year || "?", option.country || "?", titleCase(option.color || "black")];
   const prefix = option.id === bestId ? "Best Match" : "Option";
   return `${prefix}: ${option.title} (${parts.join(" • ")})`;
+}
+
+function renderSyncStatus(sync = {}){
+  const box = document.getElementById("syncStatus");
+  const button = document.getElementById("syncNowBtn");
+  if (!box || !button) return;
+
+  const summary = sync.summary || {};
+  const stateLabel = sync.running
+    ? "Running"
+    : sync.queued
+      ? "Queued"
+      : sync.error
+        ? "Needs Attention"
+        : sync.lastRunAt
+          ? "Ready"
+          : "Waiting";
+
+  const stateTone = sync.running
+    ? "warn"
+    : sync.error
+      ? "bad"
+      : "good";
+
+  button.disabled = Boolean(sync.running);
+  button.textContent = sync.running ? "Sync Running..." : "Sync Inventory Now";
+
+  box.innerHTML = `
+    <div class="status-card">
+      <div class="status-badges">
+        <span class="status-pill ${stateTone}">${stateLabel}</span>
+        <span class="status-pill">Location ${summary.locationId || "Dropship"}</span>
+      </div>
+      <div class="status-stack" style="margin-top:14px;">
+        <div class="status-row">
+          <span class="status-label">Last Run</span>
+          <span class="status-value">${formatTimestamp(sync.lastRunAt)}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Reason</span>
+          <span class="status-value">${sync.reason || "Spreadsheet refresh"}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Matched</span>
+          <span class="status-value">${summary.matched ?? 0} of ${summary.variantsSeen ?? 0}</span>
+        </div>
+        <div class="status-badges">
+          <span class="status-pill good">Updated ${summary.updated ?? 0}</span>
+          <span class="status-pill">Unchanged ${summary.unchanged ?? 0}</span>
+          <span class="status-pill ${summary.failed ? "bad" : ""}">Failed ${summary.failed ?? 0}</span>
+        </div>
+        ${sync.error ? `<p class="muted-note">Last error: ${sync.error}</p>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+async function loadSyncStatus(){
+  try {
+    const res = await fetch("/sync-status");
+    const data = await res.json();
+    renderSyncStatus(data.sync || {});
+  } catch {
+    renderSyncStatus({
+      error: "Could not load sync status"
+    });
+  }
+}
+
+async function runInventorySync(){
+  const button = document.getElementById("syncNowBtn");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Starting Sync...";
+  }
+
+  try {
+    const res = await fetch("/sync-inventory", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" }
+    });
+    const data = await res.json();
+    renderSyncStatus(data.sync || {});
+    await loadSyncStatus();
+  } catch {
+    renderSyncStatus({
+      error: "Could not start inventory sync"
+    });
+  }
 }
 
 async function scan(){
@@ -434,9 +540,11 @@ async function loadHistory(){
 
     const parts = [
       `$${formatMoney(item.basePrice || item.price)}`,
+      item.syncAction ? titleCase(item.syncAction) : null,
       item.condition || "NM",
       item.stock > 0 ? `${item.stock} synced` : "0 stock",
-      item.barcode ? `UPC ${item.barcode}` : null
+      item.barcode ? `UPC ${item.barcode}` : null,
+      item.syncedAt ? formatTimestamp(item.syncedAt) : null
     ].filter(Boolean);
 
     meta.textContent = parts.join(" • ");

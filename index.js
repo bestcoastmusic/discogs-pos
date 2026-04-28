@@ -28,9 +28,17 @@ const MIN_PRICE = 14.99;
 const DEFAULT_LOCATION_ID = 113713512818;
 const LOCATION_ID = Number(process.env.SHOPIFY_LOCATION_ID || DEFAULT_LOCATION_ID);
 const LOCAL_PRICING_FILE = path.join(__dirname, "pricing.csv");
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, ".data");
+const HISTORY_FILE = process.env.HISTORY_FILE || path.join(DATA_DIR, "history.json");
+const HISTORY_LIMIT = 60;
 const SHOPIFY_API_VERSION = "2024-01";
 const SHOPIFY_REQUEST_DELAY_MS = 550;
 const DISCOGS_REQUEST_DELAY_MS = 250;
+const VARIANT_CACHE_TTL_MS = 60000;
+let shopifyVariantCache = {
+  fetchedAt: 0,
+  variants: []
+};
 
 // ----------------------------
 function normalizeBarcode(val){
@@ -79,6 +87,44 @@ function buildInventorySignature(sourceMap = dataMap){
 
 function sleep(ms){
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function ensureDirForFile(filePath){
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+}
+
+function loadHistoryFromDisk(){
+  try {
+    if (!fs.existsSync(HISTORY_FILE)) return;
+
+    const raw = fs.readFileSync(HISTORY_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+
+    if (Array.isArray(parsed)){
+      history = parsed.slice(-HISTORY_LIMIT);
+      console.log("📝 History loaded:", history.length);
+    }
+  } catch (err){
+    console.log("❌ History load failed:", err.message);
+  }
+}
+
+function persistHistory(){
+  try {
+    ensureDirForFile(HISTORY_FILE);
+    fs.writeFileSync(HISTORY_FILE, JSON.stringify(history.slice(-HISTORY_LIMIT), null, 2));
+  } catch (err){
+    console.log("❌ History save failed:", err.message);
+  }
+}
+
+function pushHistoryEntry(item){
+  history.push({
+    ...item,
+    syncedAt: new Date().toISOString()
+  });
+  history = history.slice(-HISTORY_LIMIT);
+  persistHistory();
 }
 
 function escapeHtml(val){
@@ -226,6 +272,7 @@ async function loadExcel(){
 
 loadExcel();
 setInterval(loadExcel, 60000);
+loadHistoryFromDisk();
 
 // ----------------------------
 async function safeFetch(url){
@@ -291,6 +338,13 @@ function getVariantBarcode(variant){
   return normalizeBarcode(variant.barcode) || normalizeBarcode(variant.sku);
 }
 
+function invalidateVariantCache(){
+  shopifyVariantCache = {
+    fetchedAt: 0,
+    variants: []
+  };
+}
+
 async function fetchAllShopifyVariants(){
   let nextUrl = `/variants.json?limit=250&fields=id,product_id,inventory_item_id,barcode,sku`;
   const variants = [];
@@ -306,6 +360,34 @@ async function fetchAllShopifyVariants(){
   }
 
   return variants;
+}
+
+async function getCachedShopifyVariants(force = false){
+  const freshEnough = (Date.now() - shopifyVariantCache.fetchedAt) < VARIANT_CACHE_TTL_MS;
+  if (!force && freshEnough && shopifyVariantCache.variants.length){
+    return shopifyVariantCache.variants;
+  }
+
+  const variants = await fetchAllShopifyVariants();
+  shopifyVariantCache = {
+    fetchedAt: Date.now(),
+    variants
+  };
+  return variants;
+}
+
+async function findExistingVariantByBarcode(barcode){
+  const candidates = getBarcodeCandidates(barcode);
+  if (!candidates.length) return null;
+
+  const variants = await getCachedShopifyVariants();
+  return variants.find(variant => {
+    const variantBarcode = getVariantBarcode(variant);
+    if (!variantBarcode) return false;
+
+    const variantCandidates = getBarcodeCandidates(variantBarcode);
+    return variantCandidates.some(candidate => candidates.includes(candidate));
+  }) || null;
 }
 
 async function fetchInventoryLevels(inventoryItemIds){
@@ -351,6 +433,49 @@ async function setInventoryLevel(inventoryItemId, available){
   }
 
   return res.data.inventory_level || null;
+}
+
+async function syncInventoryForVariant(variant, available){
+  const connectRes = await shopifyRequest("/inventory_levels/connect.json", {
+    method: "POST",
+    body: JSON.stringify({
+      location_id: LOCATION_ID,
+      inventory_item_id: variant.inventory_item_id
+    })
+  });
+
+  if (!connectRes.ok){
+    console.log("❌ CONNECT ERROR:", connectRes.data);
+  }
+
+  const setRes = await shopifyRequest("/inventory_levels/set.json", {
+    method: "POST",
+    body: JSON.stringify({
+      location_id: LOCATION_ID,
+      inventory_item_id: variant.inventory_item_id,
+      available
+    })
+  });
+
+  if (!setRes.ok){
+    console.log("❌ SET ERROR:", setRes.data);
+    throw new Error(
+      typeof setRes.data?.errors === "string"
+        ? setRes.data.errors
+        : `Shopify inventory set failed (${setRes.status})`
+    );
+  }
+
+  console.log(
+    "✅ INVENTORY SET:",
+    setRes.data.inventory_level || {
+      inventory_item_id: variant.inventory_item_id,
+      location_id: LOCATION_ID,
+      available
+    }
+  );
+
+  return setRes.data.inventory_level || null;
 }
 
 function queueInventorySync(reason){
@@ -624,93 +749,107 @@ async function processBulkJob(jobId, items){
 }
 
 // ----------------------------
+async function createShopifyProduct(item){
+  const res = await shopifyRequest("/products.json", {
+    method: "POST",
+    body: JSON.stringify({
+      product: {
+        title: item.title,
+        body_html: item.description,
+        product_type: item.genre,
+        tags: `${item.genre}, ${item.color}`,
+        images: item.image ? [{ src: item.image }] : [],
+        variants: [{
+          price: item.basePrice,
+          barcode: item.barcode || undefined,
+          sku: item.barcode || undefined,
+          inventory_management: "shopify",
+          inventory_policy: "deny",
+          tracked: true
+        }]
+      }
+    })
+  });
+
+  if (!res.ok || !res.data?.product){
+    console.log("❌ SHOPIFY ERROR:", res.data);
+    throw new Error(`Shopify product create failed (${res.status})`);
+  }
+
+  return res.data.product;
+}
+
+async function updateShopifyProduct(variant, item){
+  const productRes = await shopifyRequest(`/products/${variant.product_id}.json`, {
+    method: "PUT",
+    body: JSON.stringify({
+      product: {
+        id: variant.product_id,
+        title: item.title,
+        body_html: item.description,
+        product_type: item.genre,
+        tags: `${item.genre}, ${item.color}`
+      }
+    })
+  });
+
+  if (!productRes.ok){
+    console.log("❌ PRODUCT UPDATE ERROR:", productRes.data);
+    throw new Error(`Shopify product update failed (${productRes.status})`);
+  }
+
+  const variantRes = await shopifyRequest(`/variants/${variant.id}.json`, {
+    method: "PUT",
+    body: JSON.stringify({
+      variant: {
+        id: variant.id,
+        price: item.basePrice,
+        barcode: item.barcode || undefined,
+        sku: item.barcode || undefined
+      }
+    })
+  });
+
+  if (!variantRes.ok || !variantRes.data?.variant){
+    console.log("❌ VARIANT UPDATE ERROR:", variantRes.data);
+    throw new Error(`Shopify variant update failed (${variantRes.status})`);
+  }
+
+  return {
+    ...variant,
+    ...variantRes.data.variant,
+    product_id: variant.product_id,
+    inventory_item_id: variant.inventory_item_id
+  };
+}
+
 async function upsertProduct(item){
-
-  const store = process.env.SHOPIFY_STORE;
-  const token = process.env.SHOPIFY_TOKEN;
-
   console.log("📦 SENDING:", item.title, "BARCODE:", item.barcode, "STOCK:", item.stock, "LOCATION:", LOCATION_ID);
 
-  const r = await fetch(
-    `https://${store}/admin/api/2024-01/products.json`,
-    {
-      method:"POST",
-      headers:{
-        "Content-Type":"application/json",
-        "X-Shopify-Access-Token": token
-      },
-      body: JSON.stringify({
-        product:{
-          title: item.title,
-          body_html: item.description,
-          product_type: item.genre,
-          tags: `${item.genre}, ${item.color}`,
-          images: item.image ? [{ src: item.image }] : [],
-          variants:[{
-	  	    price: item.basePrice,
-	  	    barcode: item.barcode || undefined,
-	  	    sku: item.barcode || undefined,
-	  	    inventory_management: "shopify",
-	  	    inventory_policy: "deny",
-	  	    tracked: true
-    }]
-  }
-})
-  }
-);
+  const existingVariant = item.barcode
+    ? await findExistingVariantByBarcode(item.barcode)
+    : null;
 
-  const created = await r.json();
+  let variant;
 
-  if (!created.product){
-    console.log("❌ SHOPIFY ERROR:", created);
-    return;
+  if (existingVariant){
+    console.log("♻️ EXISTING PRODUCT FOUND:", existingVariant.id, item.barcode);
+    variant = await updateShopifyProduct(existingVariant, item);
+    item.syncAction = "updated";
+  } else {
+    const createdProduct = await createShopifyProduct(item);
+    variant = createdProduct.variants?.[0];
+    item.syncAction = "created";
+    invalidateVariantCache();
   }
 
-  const variant = created.product.variants[0];
-
-  const connectRes = await fetch(
-    `https://${store}/admin/api/2024-01/inventory_levels/connect.json`,
-    {
-      method:"POST",
-      headers:{
-        "Content-Type":"application/json",
-        "X-Shopify-Access-Token": token
-      },
-      body: JSON.stringify({
-        location_id: LOCATION_ID,
-        inventory_item_id: variant.inventory_item_id
-      })
-    }
-  );
-
-  const connectData = await connectRes.json().catch(() => ({}));
-  if (!connectRes.ok){
-    console.log("❌ CONNECT ERROR:", connectData);
+  if (!variant?.inventory_item_id){
+    throw new Error("Missing Shopify inventory item id");
   }
 
-  const setRes = await fetch(
-    `https://${store}/admin/api/2024-01/inventory_levels/set.json`,
-    {
-      method:"POST",
-      headers:{
-        "Content-Type":"application/json",
-        "X-Shopify-Access-Token": token
-      },
-      body: JSON.stringify({
-        location_id: LOCATION_ID,
-        inventory_item_id: variant.inventory_item_id,
-        available: item.stock
-      })
-    }
-  );
-
-  const setData = await setRes.json().catch(() => ({}));
-  if (!setRes.ok){
-    console.log("❌ SET ERROR:", setData);
-    return;
-  }
-
-  console.log("✅ INVENTORY SET:", setData.inventory_level || { inventory_item_id: variant.inventory_item_id, location_id: LOCATION_ID, available: item.stock });
+  await syncInventoryForVariant(variant, item.stock);
+  invalidateVariantCache();
+  return variant;
 }
 
 // ----------------------------
@@ -747,8 +886,12 @@ async function processQueue(){
 
   data.condition = job.condition || "NM";
 
-  history.push(data);
-  await upsertProduct(data);
+  try {
+    await upsertProduct(data);
+    pushHistoryEntry(data);
+  } catch (err){
+    console.log("❌ IMPORT ERROR:", err.message);
+  }
 }
 
 setInterval(processQueue,1000);
