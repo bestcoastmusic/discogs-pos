@@ -6,25 +6,57 @@ const app = express();
 app.use(express.json());
 app.use(express.static("public"));
 
-// ----------------------------
 let queue = [];
 let history = [];
-let jobs = {};
 
-let priceMap = {};
-let stockMap = {};
-let genreMap = {};
+let dataMap = {};
 
-// ----------------------------
 const MIN_PRICE = 14.99;
 const LOCATION_ID = 113713512818;
 
 // ----------------------------
-function normalizeUPC(val){
-  if (!val) return "";
-  return String(val).replace(/\D/g,"").slice(-12);
+// CLEAN
+// ----------------------------
+function clean(str){
+  return String(str || "")
+    .toLowerCase()
+    .replace(/\(.*?\)/g, "")
+    .replace(/[^a-z0-9\s\-]/g,"")
+    .replace(/\s+/g," ")
+    .trim();
 }
 
+// ----------------------------
+// EXTRAS
+// ----------------------------
+function extractExtras(str){
+  const matches = String(str || "").match(/\(.*?\)/g);
+  return matches ? matches.join(" ") : "";
+}
+
+// ----------------------------
+// 🎨 COLOR DETECTION
+// ----------------------------
+function detectColor(text){
+
+  const colors = [
+    "red","blue","green","yellow","orange","purple",
+    "pink","white","clear","gold","silver",
+    "smoke","marble","splatter"
+  ];
+
+  const lower = String(text || "").toLowerCase();
+
+  const found = colors.filter(c => lower.includes(c));
+
+  if (found.length) return found.join(" / ");
+
+  if (lower.includes("colored")) return "Colored Vinyl";
+
+  return "Black";
+}
+
+// ----------------------------
 function calculatePrice(cost){
   if (!cost) return MIN_PRICE;
 
@@ -42,15 +74,6 @@ function simplifyGenre(val){
   return val.split(/[\/,]/)[0].trim();
 }
 
-// 🔥 BETTER COLUMN MATCHING
-function findColumn(keys, names){
-  return keys.find(k =>
-    names.some(n =>
-      k.toLowerCase().replace(/\s/g,"").includes(n)
-    )
-  );
-}
-
 // ----------------------------
 // LOAD EXCEL
 // ----------------------------
@@ -63,32 +86,27 @@ async function loadExcel(){
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet);
 
-    priceMap = {};
-    stockMap = {};
-    genreMap = {};
+    dataMap = {};
 
     rows.forEach(row => {
 
-      const keys = Object.keys(row);
+      const rawTitle = row["Description"];
+      const cleanTitle = clean(rawTitle);
 
-      const upcKey = findColumn(keys, ["upc","barcode"]);
-      const priceKey = findColumn(keys, ["price","cost"]);
-      const stockKey = findColumn(keys, ["qty","stock","quantity"]);
-      const genreKey = findColumn(keys, ["genre"]);
+      if (!cleanTitle) return;
 
-      if (!upcKey) return;
+      const extras = extractExtras(rawTitle);
 
-      const upc = normalizeUPC(row[upcKey]);
-
-      priceMap[upc] = parseFloat(row[priceKey]) || 0;
-      stockMap[upc] = parseInt(row[stockKey]) || 0;
-
-      if (genreKey){
-        genreMap[upc] = simplifyGenre(row[genreKey]);
-      }
+      dataMap[cleanTitle] = {
+        cost: parseFloat(row["Price"]) || 0,
+        stock: parseInt(row["QtyInStock"]) || 0,
+        genre: simplifyGenre(row["Genre"]),
+        extras,
+        color: detectColor(extras) // 🔥 FROM EXCEL
+      };
     });
 
-    console.log("✅ Excel Loaded:", Object.keys(stockMap).length);
+    console.log("✅ Excel Loaded:", Object.keys(dataMap).length);
 
   } catch (e){
     console.log("❌ Excel load failed:", e.message);
@@ -97,6 +115,22 @@ async function loadExcel(){
 
 loadExcel();
 setInterval(loadExcel, 60000);
+
+// ----------------------------
+// MATCH
+// ----------------------------
+function findMatch(title){
+
+  const key = clean(title);
+
+  if (dataMap[key]) return dataMap[key];
+
+  const found = Object.keys(dataMap).find(k =>
+    key.includes(k) || k.includes(key)
+  );
+
+  return found ? dataMap[found] : null;
+}
 
 // ----------------------------
 async function safeFetch(url){
@@ -110,33 +144,39 @@ async function safeFetch(url){
 }
 
 // ----------------------------
+// FETCH RELEASE
+// ----------------------------
 async function fetchRelease(id){
 
   const r = await safeFetch(`https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`);
 
-  const artist = r.artists?.[0]?.name || "Unknown";
-  const title = r.title || "Unknown";
+  const artist = r.artists?.[0]?.name || "";
+  const title = r.title || "";
 
-  const barcodeRaw = r.identifiers?.find(i => i.type === "Barcode")?.value;
-  const barcode = normalizeUPC(barcodeRaw);
+  const fullTitle = `${artist} - ${title}`;
+
+  const match = findMatch(fullTitle) || {};
 
   const image = r.images?.[0]?.uri || "";
 
-  const cost = priceMap[barcode] || 0;
-  const stock = stockMap[barcode] ?? 0;
-  const genre = genreMap[barcode] || "Other";
+  // fallback color from discogs if needed
+  const formatText = JSON.stringify(r.formats || []).toLowerCase();
+  const discogsColor = detectColor(formatText);
 
   return {
     id,
-    title: `${artist} - ${title}`,
+    title: fullTitle,
+    description: match.extras || "",
     image,
-    barcode,
-    basePrice: calculatePrice(cost),
-    stock,
-    genre
+    basePrice: calculatePrice(match.cost),
+    stock: match.stock || 0,
+    genre: match.genre || "Other",
+    color: match.color !== "Black" ? match.color : discogsColor
   };
 }
 
+// ----------------------------
+// SEARCH
 // ----------------------------
 app.post("/search", async (req, res) => {
 
@@ -159,58 +199,7 @@ app.post("/search", async (req, res) => {
 });
 
 // ----------------------------
-app.post("/bulk-start", (req,res)=>{
-  const { items } = req.body;
-
-  const jobId = Date.now().toString();
-  jobs[jobId] = { total: items.length, done: 0, results: [] };
-
-  processBulk(jobId, items);
-
-  res.json({ jobId });
-});
-
-async function processBulk(jobId, items){
-
-  for (let i=0;i<items.length;i++){
-
-    const barcode = items[i];
-
-    const data = await safeFetch(
-      `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
-    );
-
-    const top = (data.results||[]).slice(0,5);
-
-    let options = [];
-
-    for (const r of top){
-      const full = await fetchRelease(r.id);
-      if (full) options.push(full);
-    }
-
-    jobs[jobId].results.push({
-      barcode,
-      options,
-      best: options[0]
-    });
-
-    jobs[jobId].done++;
-
-    await new Promise(r=>setTimeout(r,150));
-  }
-}
-
-app.get("/bulk-status/:id", (req,res)=>{
-  const job = jobs[req.params.id];
-  if (!job) return res.json({});
-
-  res.json({
-    progress: Math.floor((job.done / job.total) * 100),
-    results: job.results
-  });
-});
-
+// UPSERT
 // ----------------------------
 async function upsertProduct(item){
 
@@ -229,8 +218,10 @@ async function upsertProduct(item){
   const data = await res.json();
 
   const existing = data.products.find(p =>
-    p.variants?.some(v => v.barcode === item.barcode)
+    p.title === item.title
   );
+
+  const tags = `${item.genre}, ${item.color}`; // 🔥 TAG COLOR
 
   if (existing){
 
@@ -263,8 +254,6 @@ async function upsertProduct(item){
       })
     });
 
-    console.log("🔄 Updated:", item.title);
-
   } else {
 
     const createRes = await fetch(`https://${store}/admin/api/2024-01/products.json`, {
@@ -276,11 +265,11 @@ async function upsertProduct(item){
       body: JSON.stringify({
         product:{
           title: item.title,
+          body_html: item.description,
           product_type: item.genre,
-          tags: item.genre,
+          tags: tags,
           variants:[{
             price: item.basePrice,
-            barcode: item.barcode,
             inventory_management:"shopify"
           }],
           images: item.image ? [{ src:item.image }] : []
@@ -303,8 +292,6 @@ async function upsertProduct(item){
         available: item.stock
       })
     });
-
-    console.log("📦 Created:", item.title);
   }
 }
 
@@ -331,11 +318,6 @@ async function processQueue(){
 setInterval(processQueue,1000);
 
 // ----------------------------
-app.get("/history",(req,res)=>{
-  res.json({ history });
-});
-
-// ----------------------------
 app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 STOCK FIX FINAL");
+  console.log("🚀 COLOR + MATCH SYSTEM ACTIVE");
 });
