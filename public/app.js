@@ -1,4 +1,4 @@
- console.log("POS FULL + CAMERA");
+console.log("POS FINAL CLEAN");
 
 // ----------------------------
 // INIT
@@ -81,13 +81,7 @@ async function pollBulk(jobId){
 
   data.results.forEach(item=>{
     if (!item.options?.length) return;
-
-    const card = document.createElement("div");
-    card.className = "card";
-
-    renderCard(item.options, card);
-
-    container.appendChild(card);
+    renderCard(item.options, container);
   });
 
   if (data.progress < 100){
@@ -96,12 +90,28 @@ async function pollBulk(jobId){
 }
 
 // ----------------------------
-// CARD
+// CARD (FULL DETAILS RESTORED)
 // ----------------------------
 function renderCard(options, container){
 
   const best = options[0];
 
+  const card = document.createElement("div");
+  card.className = "card";
+
+  // IMAGE + DETAILS
+  const info = document.createElement("div");
+
+  info.innerHTML = `
+    <img src="${best.image || ""}" width="70"/>
+    <div>
+      <b>${best.title}</b><br/>
+      ${best.year || ""} • ${best.country || ""}<br/>
+      <span style="color:#00e676">${best.color || "Black"} Vinyl</span>
+    </div>
+  `;
+
+  // VARIANTS
   const select = document.createElement("select");
 
   options.forEach(opt=>{
@@ -111,11 +121,12 @@ function renderCard(options, container){
 
     o.textContent =
       (opt.id === best.id ? "⭐ " : "") +
-      `${opt.title}`;
+      `${opt.title} (${opt.year || "?"} • ${opt.country || "?"} • ${opt.color || "Black"})`;
 
     select.appendChild(o);
   });
 
+  // CONDITION
   const cond = document.createElement("select");
 
   ["M","NM","VG+","VG","G"].forEach(c=>{
@@ -125,6 +136,7 @@ function renderCard(options, container){
     cond.appendChild(o);
   });
 
+  // ADD BUTTON
   const btn = document.createElement("button");
   btn.textContent = "Add";
 
@@ -144,9 +156,12 @@ function renderCard(options, container){
     alert("Added");
   };
 
-  container.appendChild(select);
-  container.appendChild(cond);
-  container.appendChild(btn);
+  card.appendChild(info);
+  card.appendChild(select);
+  card.appendChild(cond);
+  card.appendChild(btn);
+
+  container.appendChild(card);
 }
 
 // ----------------------------
@@ -157,7 +172,6 @@ let stream;
 async function startCamera(){
 
   const video = document.getElementById("camera");
-
   video.style.display = "block";
 
   try {
