@@ -7,8 +7,6 @@ app.use(express.json());
 app.use(express.static("public"));
 
 // ----------------------------
-// STATE
-// ----------------------------
 let queue = [];
 let history = [];
 let jobs = {};
@@ -18,13 +16,9 @@ let stockMap = {};
 let genreMap = {};
 
 // ----------------------------
-// SETTINGS
-// ----------------------------
 const MIN_PRICE = 14.99;
-const LOCATION_ID = 113713512818; // DROPSHIP
+const LOCATION_ID = 113713512818;
 
-// ----------------------------
-// HELPERS
 // ----------------------------
 function normalizeUPC(val){
   if (!val) return "";
@@ -48,6 +42,15 @@ function simplifyGenre(val){
   return val.split(/[\/,]/)[0].trim();
 }
 
+// 🔥 BETTER COLUMN MATCHING
+function findColumn(keys, names){
+  return keys.find(k =>
+    names.some(n =>
+      k.toLowerCase().replace(/\s/g,"").includes(n)
+    )
+  );
+}
+
 // ----------------------------
 // LOAD EXCEL
 // ----------------------------
@@ -65,12 +68,13 @@ async function loadExcel(){
     genreMap = {};
 
     rows.forEach(row => {
+
       const keys = Object.keys(row);
 
-      const upcKey = keys.find(k => k.toLowerCase().includes("upc"));
-      const priceKey = keys.find(k => k.toLowerCase().includes("price"));
-      const stockKey = keys.find(k => k.toLowerCase().includes("qty"));
-      const genreKey = keys.find(k => k.toLowerCase().includes("genre"));
+      const upcKey = findColumn(keys, ["upc","barcode"]);
+      const priceKey = findColumn(keys, ["price","cost"]);
+      const stockKey = findColumn(keys, ["qty","stock","quantity"]);
+      const genreKey = findColumn(keys, ["genre"]);
 
       if (!upcKey) return;
 
@@ -84,7 +88,7 @@ async function loadExcel(){
       }
     });
 
-    console.log("✅ Excel Loaded:", Object.keys(priceMap).length);
+    console.log("✅ Excel Loaded:", Object.keys(stockMap).length);
 
   } catch (e){
     console.log("❌ Excel load failed:", e.message);
@@ -94,8 +98,6 @@ async function loadExcel(){
 loadExcel();
 setInterval(loadExcel, 60000);
 
-// ----------------------------
-// SAFE FETCH
 // ----------------------------
 async function safeFetch(url){
   try {
@@ -108,8 +110,6 @@ async function safeFetch(url){
 }
 
 // ----------------------------
-// FETCH RELEASE
-// ----------------------------
 async function fetchRelease(id){
 
   const r = await safeFetch(`https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`);
@@ -120,8 +120,6 @@ async function fetchRelease(id){
   const barcodeRaw = r.identifiers?.find(i => i.type === "Barcode")?.value;
   const barcode = normalizeUPC(barcodeRaw);
 
-  const year = r.year || "";
-  const country = r.country || "";
   const image = r.images?.[0]?.uri || "";
 
   const cost = priceMap[barcode] || 0;
@@ -131,8 +129,6 @@ async function fetchRelease(id){
   return {
     id,
     title: `${artist} - ${title}`,
-    year,
-    country,
     image,
     barcode,
     basePrice: calculatePrice(cost),
@@ -141,8 +137,6 @@ async function fetchRelease(id){
   };
 }
 
-// ----------------------------
-// SEARCH
 // ----------------------------
 app.post("/search", async (req, res) => {
 
@@ -164,8 +158,6 @@ app.post("/search", async (req, res) => {
   res.json({ results: formatted });
 });
 
-// ----------------------------
-// BULK
 // ----------------------------
 app.post("/bulk-start", (req,res)=>{
   const { items } = req.body;
@@ -220,8 +212,6 @@ app.get("/bulk-status/:id", (req,res)=>{
 });
 
 // ----------------------------
-// UPSERT PRODUCT (FINAL)
-// ----------------------------
 async function upsertProduct(item){
 
   const store = process.env.SHOPIFY_STORE;
@@ -246,7 +236,6 @@ async function upsertProduct(item){
 
     const variant = existing.variants[0];
 
-    // update price
     await fetch(`https://${store}/admin/api/2024-01/variants/${variant.id}.json`, {
       method:"PUT",
       headers:{
@@ -261,7 +250,6 @@ async function upsertProduct(item){
       })
     });
 
-    // update inventory at dropship
     await fetch(`https://${store}/admin/api/2024-01/inventory_levels/set.json`, {
       method:"POST",
       headers:{
@@ -303,7 +291,6 @@ async function upsertProduct(item){
     const created = await createRes.json();
     const variant = created.product.variants[0];
 
-    // set inventory at dropship
     await fetch(`https://${store}/admin/api/2024-01/inventory_levels/set.json`, {
       method:"POST",
       headers:{
@@ -317,12 +304,10 @@ async function upsertProduct(item){
       })
     });
 
-    console.log("📦 Created (Dropship):", item.title);
+    console.log("📦 Created:", item.title);
   }
 }
 
-// ----------------------------
-// IMPORT
 // ----------------------------
 app.post("/import",(req,res)=>{
   const items = req.body.items || [];
@@ -330,8 +315,6 @@ app.post("/import",(req,res)=>{
   res.json({ success:true });
 });
 
-// ----------------------------
-// QUEUE
 // ----------------------------
 async function processQueue(){
 
@@ -354,5 +337,5 @@ app.get("/history",(req,res)=>{
 
 // ----------------------------
 app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 EVERYTHING FIXED FINAL BUILD");
+  console.log("🚀 STOCK FIX FINAL");
 });
