@@ -9,6 +9,11 @@ app.use(express.static("public"));
 // ----------------------------
 // STATE
 // ----------------------------
+let queue = [];
+let history = [];
+let inventorySet = new Set();
+let jobs = {};
+
 let priceMap = {};
 let stockMap = {};
 
@@ -24,7 +29,6 @@ function normalizeUPC(val){
 // LOAD EXCEL
 // ----------------------------
 async function loadExcel(){
-
   try {
     const res = await fetch(process.env.CSV_URL);
     const buffer = await res.arrayBuffer();
@@ -37,7 +41,6 @@ async function loadExcel(){
     stockMap = {};
 
     rows.forEach(row => {
-
       const keys = Object.keys(row);
 
       const upcKey = keys.find(k =>
@@ -73,7 +76,6 @@ async function loadExcel(){
   }
 }
 
-// initial + interval
 loadExcel();
 setInterval(loadExcel, 60000);
 
@@ -104,10 +106,7 @@ async function fetchRelease(id){
   const artist = r.artists?.[0]?.name || "Unknown";
   const title = r.title || "Unknown";
 
-  const barcodeRaw = r.identifiers
-    ?.find(i => i.type === "Barcode")
-    ?.value;
-
+  const barcodeRaw = r.identifiers?.find(i => i.type === "Barcode")?.value;
   const barcode = normalizeUPC(barcodeRaw);
 
   const year = r.year || "";
@@ -115,7 +114,6 @@ async function fetchRelease(id){
   const image = r.images?.[0]?.uri || "";
 
   const formatText = JSON.stringify(r.formats || []).toLowerCase();
-
   const colors = ["red","blue","green","yellow","orange","purple","pink","white","clear","gold","silver","smoke","marble","splatter"];
   const found = colors.filter(c => formatText.includes(c));
   const color = found.length ? found.join(" / ") : "Black";
@@ -160,6 +158,105 @@ app.post("/search", async (req, res) => {
 });
 
 // ----------------------------
+// BULK START
+// ----------------------------
+app.post("/bulk-start", (req,res)=>{
+  const { items } = req.body;
+
+  const jobId = Date.now().toString();
+  jobs[jobId] = { total: items.length, done: 0, results: [] };
+
+  processBulk(jobId, items);
+
+  res.json({ jobId });
+});
+
+// ----------------------------
+// BULK PROCESS
+// ----------------------------
+async function processBulk(jobId, items){
+
+  for (let i=0;i<items.length;i++){
+
+    const barcode = items[i];
+
+    const data = await safeFetch(
+      `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
+    );
+
+    const top = (data.results||[]).slice(0,5);
+
+    let options = [];
+
+    for (const r of top){
+      const full = await fetchRelease(r.id);
+      if (full) options.push(full);
+    }
+
+    jobs[jobId].results.push({
+      barcode,
+      options,
+      best: options[0]
+    });
+
+    jobs[jobId].done++;
+
+    await new Promise(r=>setTimeout(r,150));
+  }
+}
+
+// ----------------------------
+app.get("/bulk-status/:id", (req,res)=>{
+  const job = jobs[req.params.id];
+  if (!job) return res.json({});
+
+  res.json({
+    progress: Math.floor((job.done / job.total) * 100),
+    results: job.results
+  });
+});
+
+// ----------------------------
+// IMPORT
+// ----------------------------
+app.post("/import",(req,res)=>{
+  const items = req.body.items || [];
+
+  items.forEach(i=>{
+    if (!inventorySet.has(i.id)){
+      inventorySet.add(i.id);
+      queue.push(i);
+    }
+  });
+
+  res.json({ success:true });
+});
+
+// ----------------------------
+// PROCESS QUEUE
+// ----------------------------
+async function processQueue(){
+  if (!queue.length) return;
+
+  const job = queue.shift();
+  const data = await fetchRelease(job.id);
+  if (!data) return;
+
+  history.push(data);
+
+  console.log("📦 Added:", data.title);
+}
+
+setInterval(processQueue,1000);
+
+// ----------------------------
+// HISTORY (RESTORED)
+// ----------------------------
+app.get("/history", (req, res) => {
+  res.json({ history });
+});
+
+// ----------------------------
 app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 UPC MATCH FIXED");
+  console.log("🚀 FULL SYSTEM RESTORED");
 });
