@@ -12,11 +12,24 @@ let queue = [];
 let history = [];
 let jobs = {};
 let dataMap = {};
+let inventorySyncRunning = false;
+let inventorySyncQueued = false;
+let lastInventorySignature = "";
+let lastInventorySync = {
+  running: false,
+  queued: false,
+  lastRunAt: null,
+  reason: null,
+  summary: null,
+  error: null
+};
 
 const MIN_PRICE = 14.99;
 const DEFAULT_LOCATION_ID = 113713512818;
 const LOCATION_ID = Number(process.env.SHOPIFY_LOCATION_ID || DEFAULT_LOCATION_ID);
 const LOCAL_PRICING_FILE = path.join(__dirname, "pricing.csv");
+const SHOPIFY_API_VERSION = "2024-01";
+const SHOPIFY_REQUEST_DELAY_MS = 550;
 
 // ----------------------------
 function normalizeBarcode(val){
@@ -29,15 +42,15 @@ function getBarcodeCandidates(barcode){
   return [...new Set([clean, trimmed].filter(Boolean))];
 }
 
-function findMatch(barcode){
+function findMatch(barcode, sourceMap = dataMap){
   const candidates = getBarcodeCandidates(barcode);
   if (!candidates.length) return null;
 
   for (const candidate of candidates){
-    if (dataMap[candidate]) return dataMap[candidate];
+    if (sourceMap[candidate]) return sourceMap[candidate];
   }
 
-  for (const [key, value] of Object.entries(dataMap)){
+  for (const [key, value] of Object.entries(sourceMap)){
     const keyCandidates = getBarcodeCandidates(key);
 
     if (keyCandidates.some(keyCandidate =>
@@ -54,6 +67,17 @@ function findMatch(barcode){
   }
 
   return null;
+}
+
+function buildInventorySignature(sourceMap = dataMap){
+  return Object.entries(sourceMap)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([barcode, item]) => `${barcode}:${item.stock}`)
+    .join("|");
+}
+
+function sleep(ms){
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function extractExtras(str){
@@ -107,8 +131,7 @@ async function loadExcel(){
 
     const sheet = wb.Sheets[wb.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet);
-
-    dataMap = {};
+    const nextDataMap = {};
 
     rows.forEach(row => {
       const barcode = normalizeBarcode(
@@ -116,7 +139,7 @@ async function loadExcel(){
       );
       if (!barcode) return;
 
-      dataMap[barcode] = {
+      nextDataMap[barcode] = {
         cost: parseFloat(row["Price"]) || 0,
         stock: parseInt(row["QtyInStock"] || row["Qty"] || 0),
         extras: extractExtras(row["Description"]),
@@ -125,7 +148,17 @@ async function loadExcel(){
       };
     });
 
+    dataMap = nextDataMap;
+
     console.log("✅ Excel Loaded:", Object.keys(dataMap).length);
+
+    const nextSignature = buildInventorySignature(nextDataMap);
+    if (nextSignature !== lastInventorySignature){
+      lastInventorySignature = nextSignature;
+      queueInventorySync("spreadsheet refresh");
+    } else {
+      console.log("⏭️ Inventory sync skipped: spreadsheet stock unchanged");
+    }
 
   } catch (e){
     console.log("❌ Excel load failed:", e.message);
@@ -142,6 +175,232 @@ async function safeFetch(url){
     return await res.json();
   } catch {
     return {};
+  }
+}
+
+async function shopifyRequest(pathOrUrl, options = {}){
+  const store = process.env.SHOPIFY_STORE;
+  const token = process.env.SHOPIFY_TOKEN;
+
+  if (!store || !token){
+    throw new Error("Shopify env missing");
+  }
+
+  const url = pathOrUrl.startsWith("http")
+    ? pathOrUrl
+    : `https://${store}/admin/api/${SHOPIFY_API_VERSION}${pathOrUrl}`;
+
+  const headers = {
+    "X-Shopify-Access-Token": token,
+    ...(options.body ? { "Content-Type": "application/json" } : {}),
+    ...(options.headers || {})
+  };
+
+  const res = await fetch(url, { ...options, headers });
+  const text = await res.text();
+
+  let data = {};
+  if (text){
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { raw: text };
+    }
+  }
+
+  return { ok: res.ok, status: res.status, data, headers: res.headers };
+}
+
+function getNextLink(linkHeader){
+  if (!linkHeader) return null;
+  const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+  return match ? match[1] : null;
+}
+
+function getVariantBarcode(variant){
+  return normalizeBarcode(variant.barcode) || normalizeBarcode(variant.sku);
+}
+
+async function fetchAllShopifyVariants(){
+  let nextUrl = `/variants.json?limit=250&fields=id,product_id,inventory_item_id,barcode,sku`;
+  const variants = [];
+
+  while (nextUrl){
+    const res = await shopifyRequest(nextUrl);
+    if (!res.ok){
+      throw new Error(`Shopify variants fetch failed (${res.status})`);
+    }
+
+    variants.push(...(res.data.variants || []));
+    nextUrl = getNextLink(res.headers.get("link"));
+  }
+
+  return variants;
+}
+
+async function fetchInventoryLevels(inventoryItemIds){
+  const levels = new Map();
+
+  for (let i = 0; i < inventoryItemIds.length; i += 50){
+    const batch = inventoryItemIds.slice(i, i + 50);
+    const params = new URLSearchParams({
+      location_ids: String(LOCATION_ID),
+      inventory_item_ids: batch.join(",")
+    });
+
+    const res = await shopifyRequest(`/inventory_levels.json?${params.toString()}`);
+    if (!res.ok){
+      throw new Error(`Shopify inventory levels fetch failed (${res.status})`);
+    }
+
+    for (const level of res.data.inventory_levels || []){
+      levels.set(String(level.inventory_item_id), Number(level.available || 0));
+    }
+  }
+
+  return levels;
+}
+
+async function setInventoryLevel(inventoryItemId, available){
+  const res = await shopifyRequest("/inventory_levels/set.json", {
+    method: "POST",
+    body: JSON.stringify({
+      location_id: LOCATION_ID,
+      inventory_item_id: inventoryItemId,
+      available,
+      disconnect_if_necessary: true
+    })
+  });
+
+  if (!res.ok){
+    throw new Error(
+      typeof res.data?.errors === "string"
+        ? res.data.errors
+        : `Shopify inventory set failed (${res.status})`
+    );
+  }
+
+  return res.data.inventory_level || null;
+}
+
+function queueInventorySync(reason){
+  if (!Object.keys(dataMap).length){
+    console.log("⏭️ Inventory sync skipped: no spreadsheet data");
+    return;
+  }
+
+  if (inventorySyncRunning){
+    inventorySyncQueued = true;
+    lastInventorySync.queued = true;
+    console.log("⏳ Inventory sync queued:", reason);
+    return;
+  }
+
+  void syncExistingInventory(reason);
+}
+
+async function syncExistingInventory(reason){
+  inventorySyncRunning = true;
+  inventorySyncQueued = false;
+  lastInventorySync = {
+    ...lastInventorySync,
+    running: true,
+    queued: false,
+    lastRunAt: new Date().toISOString(),
+    reason,
+    summary: null,
+    error: null
+  };
+
+  const syncMap = dataMap;
+
+  try {
+    console.log("🔁 Inventory sync started:", reason);
+
+    const variants = await fetchAllShopifyVariants();
+    const matched = variants
+      .map(variant => {
+        const barcode = getVariantBarcode(variant);
+        if (!barcode) return null;
+
+        const match = findMatch(barcode, syncMap);
+        if (!match) return null;
+
+        return {
+          variantId: variant.id,
+          inventoryItemId: variant.inventory_item_id,
+          barcode,
+          desiredStock: match.stock
+        };
+      })
+      .filter(Boolean);
+
+    const levels = await fetchInventoryLevels(
+      matched.map(item => item.inventoryItemId)
+    );
+
+    let updated = 0;
+    let unchanged = 0;
+    let failed = 0;
+
+    for (const item of matched){
+      const currentStock = levels.has(String(item.inventoryItemId))
+        ? levels.get(String(item.inventoryItemId))
+        : null;
+
+      if (currentStock === item.desiredStock){
+        unchanged++;
+        continue;
+      }
+
+      try {
+        await setInventoryLevel(item.inventoryItemId, item.desiredStock);
+        updated++;
+        console.log(
+          "✅ AUTO INVENTORY:",
+          item.barcode,
+          `${currentStock ?? "none"} -> ${item.desiredStock}`
+        );
+      } catch (err){
+        failed++;
+        console.log("❌ AUTO INVENTORY ERROR:", item.barcode, err.message);
+      }
+
+      await sleep(SHOPIFY_REQUEST_DELAY_MS);
+    }
+
+    const summary = {
+      locationId: LOCATION_ID,
+      variantsSeen: variants.length,
+      matched: matched.length,
+      updated,
+      unchanged,
+      failed
+    };
+
+    lastInventorySync = {
+      ...lastInventorySync,
+      running: false,
+      summary
+    };
+
+    console.log("✅ Inventory sync complete:", JSON.stringify(summary));
+  } catch (err){
+    lastInventorySync = {
+      ...lastInventorySync,
+      running: false,
+      error: err.message
+    };
+
+    console.log("❌ Inventory sync failed:", err.message);
+  } finally {
+    inventorySyncRunning = false;
+
+    if (inventorySyncQueued){
+      inventorySyncQueued = false;
+      console.log("🔁 Running queued inventory sync");
+      void syncExistingInventory("queued rerun");
+    }
   }
 }
 
@@ -292,6 +551,18 @@ app.post("/import",(req,res)=>{
   res.json({ success:true });
 });
 
+app.post("/sync-inventory",(req,res)=>{
+  queueInventorySync("manual request");
+  res.json({
+    success: true,
+    sync: {
+      ...lastInventorySync,
+      running: inventorySyncRunning,
+      queued: inventorySyncQueued
+    }
+  });
+});
+
 // ----------------------------
 async function processQueue(){
   if (!queue.length) return;
@@ -308,6 +579,16 @@ setInterval(processQueue,1000);
 // ----------------------------
 app.get("/history",(req,res)=>{
   res.json({ history });
+});
+
+app.get("/sync-status",(req,res)=>{
+  res.json({
+    sync: {
+      ...lastInventorySync,
+      running: inventorySyncRunning,
+      queued: inventorySyncQueued
+    }
+  });
 });
 
 // ----------------------------
