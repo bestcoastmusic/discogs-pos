@@ -165,6 +165,12 @@
       transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
     }
 
+    textarea.control-input {
+      min-height: 140px;
+      resize: vertical;
+      line-height: 1.5;
+    }
+
     .control-input:focus,
     #barcode:focus,
     #bulk:focus {
@@ -208,6 +214,17 @@
       background: rgba(28, 143, 87, 0.08);
       color: var(--accent-deep);
       box-shadow: none;
+    }
+
+    .ghost-btn {
+      background: rgba(31, 27, 24, 0.06);
+      color: var(--ink);
+      box-shadow: none;
+    }
+
+    .danger-btn {
+      background: rgba(182, 73, 73, 0.12);
+      color: var(--warn);
     }
 
     .primary-btn:hover,
@@ -349,6 +366,43 @@
       gap: 12px;
       margin-top: 16px;
       align-items: end;
+    }
+
+    .bulk-toolbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+
+    .result-actions-inline {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .bulk-editor {
+      display: none;
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid rgba(64, 43, 20, 0.1);
+    }
+
+    .bulk-editor.open {
+      display: block;
+    }
+
+    .editor-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .editor-wide {
+      grid-column: 1 / -1;
     }
 
     .field-stack {
@@ -494,6 +548,7 @@
     @media (max-width: 1100px) {
       .workspace,
       .controls-grid,
+      .editor-grid,
       .result-controls,
       .hero {
         grid-template-columns: 1fr;

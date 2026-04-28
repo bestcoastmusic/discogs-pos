@@ -194,13 +194,100 @@ function simplifyGenre(val){
   return val ? val.split(/[\/,]/)[0].trim() : "Other";
 }
 
-function detectColor(text){
-  const colors = ["red","blue","green","yellow","orange","purple","pink","white","clear","gold","silver"];
-  const lower = String(text || "").toLowerCase();
-  for (const c of colors){
-    if (lower.includes(c)) return c;
+const COLOR_PATTERNS = [
+  { color: "cream", patterns: [/\bcream\b/, /\bivory\b/, /\boff[-\s]?white\b/, /\beggshell\b/, /\bbeige\b/, /\bbone\b/, /\btan\b/, /\bsand\b/, /\bkhaki\b/] },
+  { color: "clear", patterns: [/\bclear\b/, /\btransparent\b/, /\btranslucent\b/] },
+  { color: "white", patterns: [/\bwhite\b/, /\bmilky\b/, /\bopaque\b/] },
+  { color: "silver", patterns: [/\bsilver\b/, /\bgray\b/, /\bgrey\b/, /\bsmoke\b/, /\bsmokey\b/] },
+  { color: "gold", patterns: [/\bgold\b/] },
+  { color: "pink", patterns: [/\bpink\b/, /\brose\b/] },
+  { color: "purple", patterns: [/\bpurple\b/, /\bviolet\b/, /\blavender\b/] },
+  { color: "blue", patterns: [/\bblue\b/, /\bcobalt\b/, /\bnavy\b/, /\bteal\b/, /\baqua\b/, /\bcyan\b/] },
+  { color: "green", patterns: [/\bgreen\b/, /\bolive\b/, /\bemerald\b/, /\bmint\b/] },
+  { color: "yellow", patterns: [/\byellow\b/] },
+  { color: "orange", patterns: [/\borange\b/, /\bamber\b/, /\bpeach\b/] },
+  { color: "red", patterns: [/\bred\b/, /\bmaroon\b/, /\bcrimson\b/, /\bburgundy\b/] },
+  { color: "brown", patterns: [/\bbrown\b/, /\bchocolate\b/, /\bcocoa\b/, /\bcoffee\b/] },
+  { color: "black", patterns: [/\bblack\b/, /\bblk\b/] }
+];
+
+function detectColor(...inputs){
+  const lower = inputs
+    .flat()
+    .map(value => String(value || "").toLowerCase())
+    .join(" ");
+
+  for (const entry of COLOR_PATTERNS){
+    if (entry.patterns.some(pattern => pattern.test(lower))){
+      return entry.color;
+    }
   }
+
+  return "";
+}
+
+function chooseColor(primaryColor, fallbackColor){
+  const primary = detectColor(primaryColor) || String(primaryColor || "").trim().toLowerCase();
+  const fallback = detectColor(fallbackColor) || String(fallbackColor || "").trim().toLowerCase();
+
+  if (primary && primary !== "black") return primary;
+  if (fallback) return fallback;
+  if (primary) return primary;
   return "black";
+}
+
+function buildHtmlDescriptionFromText(text){
+  return normalizeTextBlock(text)
+    .split("\n")
+    .filter(Boolean)
+    .map(line => `<p>${escapeHtml(line)}</p>`)
+    .join("");
+}
+
+function applyItemOverrides(item, overrides = {}){
+  if (!overrides || typeof overrides !== "object"){
+    return item;
+  }
+
+  const next = { ...item };
+
+  if (typeof overrides.title === "string"){
+    next.title = overrides.title.trim() || next.title;
+  }
+
+  if (typeof overrides.barcode === "string"){
+    const clean = normalizeBarcode(overrides.barcode);
+    if (clean) next.barcode = clean;
+  }
+
+  const price = Number.parseFloat(overrides.basePrice);
+  if (Number.isFinite(price) && price > 0){
+    next.basePrice = price.toFixed(2);
+  }
+
+  const stock = Number.parseInt(overrides.stock, 10);
+  if (Number.isFinite(stock) && stock >= 0){
+    next.stock = stock;
+  }
+
+  ["year", "country", "label", "format", "genre"].forEach(field => {
+    if (typeof overrides[field] === "string"){
+      next[field] = overrides[field].trim();
+    }
+  });
+
+  if (typeof overrides.color === "string"){
+    next.color = chooseColor(overrides.color, next.color);
+  }
+
+  if (typeof overrides.descriptionText === "string"){
+    next.descriptionText = normalizeTextBlock(overrides.descriptionText);
+    next.description = buildHtmlDescriptionFromText(next.descriptionText);
+  } else if (!next.description && next.descriptionText){
+    next.description = buildHtmlDescriptionFromText(next.descriptionText);
+  }
+
+  return next;
 }
 
 function calculatePrice(cost){
@@ -616,6 +703,13 @@ async function fetchRelease(id, barcode){
   );
   const resolvedBarcode = normalizeBarcode(barcode) || releaseBarcode;
   const match = findMatch(resolvedBarcode);
+  const discogsColor = detectColor(
+    title,
+    format,
+    r.notes,
+    (r.formats || []).flatMap(entry => entry.descriptions || []),
+    (r.styles || []).join(" ")
+  );
   const description = buildDiscogsDescription({
     year,
     country,
@@ -651,7 +745,7 @@ async function fetchRelease(id, barcode){
     label,
     format,
     genre: match?.genre || "Other",
-    color: match?.color || "black"
+    color: chooseColor(match?.color, discogsColor)
   };
 }
 
@@ -856,9 +950,11 @@ async function upsertProduct(item){
 app.post("/import",(req,res)=>{
   (req.body.items || []).forEach(i=>{
     queue.push({
-      id:i.id,
-      barcode:i.barcode,
+      id: i.id,
+      barcode: i.barcode,
       condition: i.condition || "NM"
+      ,
+      overrides: i.overrides || null
     });
   });
   res.json({ success:true });
@@ -884,11 +980,12 @@ async function processQueue(){
   const data = await fetchRelease(job.id, job.barcode);
   if (!data) return;
 
-  data.condition = job.condition || "NM";
+  const finalItem = applyItemOverrides(data, job.overrides);
+  finalItem.condition = job.condition || "NM";
 
   try {
-    await upsertProduct(data);
-    pushHistoryEntry(data);
+    await upsertProduct(finalItem);
+    pushHistoryEntry(finalItem);
   } catch (err){
     console.log("❌ IMPORT ERROR:", err.message);
   }
