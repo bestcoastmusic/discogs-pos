@@ -20,40 +20,20 @@ const LOCATION_ID = 113713512818;
 // CLEAN / MATCH HELPERS
 // ----------------------------
 function clean(str){
-  return String(str || "")
+
+  if (!str) return "";
+
+  // remove everything in parentheses
+  let base = str.replace(/\(.*?\)/g, "");
+
+  // normalize
+  base = base
     .toLowerCase()
-    .replace(/\(.*?\)/g, "")
     .replace(/[^a-z0-9\s\-]/g,"")
     .replace(/\s+/g," ")
     .trim();
-}
 
-function extractExtras(str){
-  const matches = String(str || "").match(/\(.*?\)/g);
-  return matches ? matches.join(" ") : "";
-}
-
-function detectColor(text){
-  const colors = ["red","blue","green","yellow","orange","purple","pink","white","clear","gold","silver","smoke","marble","splatter"];
-  const lower = String(text || "").toLowerCase();
-  const found = colors.filter(c => lower.includes(c));
-  if (found.length) return found.join(" / ");
-  if (lower.includes("colored")) return "Colored Vinyl";
-  return "Black";
-}
-
-function calculatePrice(cost){
-  if (!cost) return MIN_PRICE;
-  let price = cost * 1.25;
-  price = Math.ceil(price);
-  price = price - 0.01;
-  if (price < MIN_PRICE) price = MIN_PRICE;
-  return price.toFixed(2);
-}
-
-function simplifyGenre(val){
-  if (!val) return "Other";
-  return val.split(/[\/,]/)[0].trim();
+  return base;
 }
 
 // ----------------------------
@@ -104,28 +84,15 @@ function findMatch(title){
 
   const key = clean(title);
 
+  // exact match first (this will now work)
   if (dataMap[key]) return dataMap[key];
 
-  const words = key.split(" ").filter(w => w.length > 2);
-
-  let bestMatch = null;
-  let bestScore = 0;
-
+  // fallback: strict contains (not fuzzy guessing)
   for (const k in dataMap){
-
-    let score = 0;
-
-    for (const word of words){
-      if (k.includes(word)) score++;
-    }
-
-    if (score > bestScore && score >= 2){
-      bestScore = score;
-      bestMatch = dataMap[k];
-    }
+    if (k === key) return dataMap[k];
   }
 
-  return bestMatch;
+  return null;
 }
 
 // ----------------------------
