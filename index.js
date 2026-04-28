@@ -35,7 +35,7 @@ function calculatePrice(cost){
 }
 
 // ----------------------------
-// LOAD EXCEL (BARCODE BASED)
+// LOAD EXCEL
 // ----------------------------
 async function loadExcel(){
   try {
@@ -49,7 +49,6 @@ async function loadExcel(){
     dataMap = {};
 
     rows.forEach(row => {
-
       const barcode = normalizeBarcode(
         row["UPC"] || row["Barcode"] || row["EAN"] || row["Code"]
       );
@@ -74,8 +73,6 @@ async function loadExcel(){
 loadExcel();
 setInterval(loadExcel, 60000);
 
-// ----------------------------
-// MATCH (BARCODE)
 // ----------------------------
 function findMatch(barcode){
   return dataMap[normalizeBarcode(barcode)] || null;
@@ -123,10 +120,7 @@ async function fetchRelease(id){
 }
 
 // ----------------------------
-// SEARCH
-// ----------------------------
 app.post("/search", async (req,res)=>{
-
   const { barcode } = req.body;
 
   const data = await safeFetch(
@@ -136,7 +130,6 @@ app.post("/search", async (req,res)=>{
   const results = (data.results||[]).slice(0,5);
 
   const out = [];
-
   for (const r of results){
     out.push(await fetchRelease(r.id));
   }
@@ -144,8 +137,6 @@ app.post("/search", async (req,res)=>{
   res.json({ results: out });
 });
 
-// ----------------------------
-// BULK
 // ----------------------------
 app.post("/bulk-start",(req,res)=>{
   const { items } = req.body;
@@ -159,7 +150,6 @@ app.post("/bulk-start",(req,res)=>{
 });
 
 async function processBulk(id, items){
-
   for (let i=0;i<items.length;i++){
 
     const barcode = items[i];
@@ -171,7 +161,6 @@ async function processBulk(id, items){
     const top = (data.results||[]).slice(0,5);
 
     const opts = [];
-
     for (const r of top){
       opts.push(await fetchRelease(r.id));
     }
@@ -199,7 +188,7 @@ app.get("/bulk-status/:id",(req,res)=>{
 });
 
 // ----------------------------
-// SHOPIFY
+// SHOPIFY (FINAL FIX)
 // ----------------------------
 async function upsertProduct(item){
 
@@ -236,7 +225,9 @@ async function upsertProduct(item){
             product_type: item.genre,
             variants:[{
               price: item.basePrice,
-              inventory_management:"shopify"
+              inventory_management: "shopify",
+              inventory_policy: "deny",
+              tracked: true
             }],
             images: item.image ? [{ src:item.image }] : []
           }
@@ -264,9 +255,9 @@ async function upsertProduct(item){
     }
   );
 
-  // SET INVENTORY
+  // ADJUST INVENTORY (KEY FIX)
   await fetch(
-    `https://${store}/admin/api/2024-01/inventory_levels/set.json`,
+    `https://${store}/admin/api/2024-01/inventory_levels/adjust.json`,
     {
       method:"POST",
       headers:{
@@ -276,7 +267,7 @@ async function upsertProduct(item){
       body: JSON.stringify({
         location_id: LOCATION_ID,
         inventory_item_id: variant.inventory_item_id,
-        available: item.stock
+        available_adjustment: item.stock
       })
     }
   );
@@ -290,7 +281,6 @@ app.post("/import",(req,res)=>{
 
 // ----------------------------
 async function processQueue(){
-
   if (!queue.length) return;
 
   const job = queue.shift();
@@ -310,5 +300,5 @@ app.get("/history",(req,res)=>{
 
 // ----------------------------
 app.listen(process.env.PORT||10000,()=>{
-  console.log("🚀 BARCODE SYSTEM LIVE (FINAL)");
+  console.log("🚀 FINAL FIX: BARCODE + SHOPIFY INVENTORY");
 });
