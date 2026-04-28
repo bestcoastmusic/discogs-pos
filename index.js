@@ -206,6 +206,12 @@ function simplifyGenre(val){
   return val ? val.split(/[\/,]/)[0].trim() : "Other";
 }
 
+function cleanDiscogsArtistName(value){
+  return String(value || "")
+    .replace(/\s+\(\d+\)\s*$/u, "")
+    .trim();
+}
+
 function normalizeComparableTitle(value){
   return String(value || "")
     .toLowerCase()
@@ -824,7 +830,7 @@ async function fetchRelease(id, barcode){
     return null;
   }
 
-  const artist = r.artists?.[0]?.name || "";
+  const artist = cleanDiscogsArtistName(r.artists?.[0]?.name || "");
   const title = r.title || "";
   const year = r.year || "";
   const country = r.country || "";
