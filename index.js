@@ -5,6 +5,7 @@ const app = express();
 app.use(express.json());
 app.use(express.static("public"));
 
+// ----------------------------
 let queue = [];
 let history = [];
 let jobs = {};
@@ -25,6 +26,23 @@ function normalizeBarcode(val){
 function extractExtras(str){
   const matches = String(str || "").match(/\(.*?\)/g);
   return matches ? matches.join(" ") : "";
+}
+
+function simplifyGenre(val){
+  return val ? val.split(/[\/,]/)[0].trim() : "Other";
+}
+
+function detectColor(text){
+  const colors = ["red","blue","green","yellow","orange","purple","pink","white","clear","gold","silver"];
+  const lower = String(text || "").toLowerCase();
+
+  for (const c of colors){
+    if (lower.includes(c)) return c;
+  }
+
+  if (lower.includes("colored")) return "colored";
+
+  return "black";
 }
 
 function calculatePrice(cost){
@@ -49,6 +67,7 @@ async function loadExcel(){
     dataMap = {};
 
     rows.forEach(row => {
+
       const barcode = normalizeBarcode(
         row["UPC"] || row["Barcode"] || row["EAN"] || row["Code"]
       );
@@ -59,7 +78,8 @@ async function loadExcel(){
         cost: parseFloat(row["Price"]) || 0,
         stock: parseInt(row["QtyInStock"]) || 0,
         extras: extractExtras(row["Description"]),
-        genre: row["Genre"] || "Other"
+        genre: simplifyGenre(row["Genre"]),
+        color: detectColor(row["Description"])
       };
     });
 
@@ -115,10 +135,13 @@ async function fetchRelease(id){
     image: r.images?.[0]?.uri || "",
     basePrice: calculatePrice(match.cost),
     stock: match.stock || 0,
-    genre: match.genre || "Other"
+    genre: match.genre || "Other",
+    color: match.color || "black"
   };
 }
 
+// ----------------------------
+// SEARCH
 // ----------------------------
 app.post("/search", async (req,res)=>{
   const { barcode } = req.body;
@@ -137,6 +160,8 @@ app.post("/search", async (req,res)=>{
   res.json({ results: out });
 });
 
+// ----------------------------
+// BULK
 // ----------------------------
 app.post("/bulk-start",(req,res)=>{
   const { items } = req.body;
@@ -188,7 +213,7 @@ app.get("/bulk-status/:id",(req,res)=>{
 });
 
 // ----------------------------
-// SHOPIFY (FINAL FIX)
+// SHOPIFY
 // ----------------------------
 async function upsertProduct(item){
 
@@ -223,6 +248,7 @@ async function upsertProduct(item){
             title: item.title,
             body_html: item.description,
             product_type: item.genre,
+            tags: `${item.genre}, ${item.color}`,
             variants:[{
               price: item.basePrice,
               inventory_management: "shopify",
@@ -239,7 +265,7 @@ async function upsertProduct(item){
     variant = created.product.variants[0];
   }
 
-  // CONNECT INVENTORY
+  // CONNECT
   await fetch(
     `https://${store}/admin/api/2024-01/inventory_levels/connect.json`,
     {
@@ -255,9 +281,9 @@ async function upsertProduct(item){
     }
   );
 
-  // ADJUST INVENTORY (KEY FIX)
+  // SET (NOT ADJUST — THIS FIXES 0 BUG)
   await fetch(
-    `https://${store}/admin/api/2024-01/inventory_levels/adjust.json`,
+    `https://${store}/admin/api/2024-01/inventory_levels/set.json`,
     {
       method:"POST",
       headers:{
@@ -267,7 +293,7 @@ async function upsertProduct(item){
       body: JSON.stringify({
         location_id: LOCATION_ID,
         inventory_item_id: variant.inventory_item_id,
-        available_adjustment: item.stock
+        available: item.stock
       })
     }
   );
@@ -300,5 +326,5 @@ app.get("/history",(req,res)=>{
 
 // ----------------------------
 app.listen(process.env.PORT||10000,()=>{
-  console.log("🚀 FINAL FIX: BARCODE + SHOPIFY INVENTORY");
+  console.log("🚀 STABLE BUILD LIVE");
 });
