@@ -123,24 +123,31 @@ function findMatch(title){
 
   const key = clean(title);
 
+  // exact match first
   if (dataMap[key]) return dataMap[key];
 
-  const found = Object.keys(dataMap).find(k =>
-    key.includes(k) || k.includes(key)
-  );
+  // split into words (artist + album)
+  const words = key.split(" ").filter(w => w.length > 2);
 
-  return found ? dataMap[found] : null;
-}
+  let bestMatch = null;
+  let bestScore = 0;
 
-// ----------------------------
-async function safeFetch(url){
-  try {
-    const res = await fetch(url);
-    const text = await res.text();
-    return JSON.parse(text);
-  } catch {
-    return {};
+  for (const k in dataMap){
+
+    let score = 0;
+
+    for (const word of words){
+      if (k.includes(word)) score++;
+    }
+
+    // require at least 2 matching words
+    if (score > bestScore && score >= 2){
+      bestScore = score;
+      bestMatch = dataMap[k];
+    }
   }
+
+  return bestMatch;
 }
 
 // ----------------------------
