@@ -14,20 +14,17 @@ let queue = [];
 let history = [];
 let inventory = new Set();
 let jobs = {};
-let priceMap = {}; // 🔥 CSV PRICE MAP
+let priceMap = {};
 
 // ----------------------------
-// LOAD CSV (ON START)
+// LOAD CSV
 // ----------------------------
 fs.createReadStream("pricing.csv")
   .pipe(csv())
   .on("data", (row) => {
     if (row.UPC && row.Price) {
-      const upc = row.UPC.toString().trim();
-      const price = parseFloat(row.Price);
-      if (upc && price) {
-        priceMap[upc] = price;
-      }
+      const upc = row.UPC.toString().replace(/\D/g, "");
+      priceMap[upc] = parseFloat(row.Price);
     }
   })
   .on("end", () => {
@@ -35,7 +32,7 @@ fs.createReadStream("pricing.csv")
   });
 
 // ----------------------------
-// PRICING MULTIPLIER
+// PRICING
 // ----------------------------
 const conditionMultiplier = {
   M: 1.5,
@@ -76,9 +73,7 @@ function detectColorFromFormats(formats = []) {
   const colors = ["red","blue","green","yellow","orange","purple","pink","white","clear","gold","silver","smoke","marble","splatter"];
 
   const found = colors.filter(c => text.includes(c));
-  if (found.length) return found.map(c => c[0].toUpperCase()+c.slice(1)).join(" / ");
-
-  return "Black";
+  return found.length ? found.join(" / ") : "Black";
 }
 
 // ----------------------------
@@ -88,21 +83,18 @@ async function fetchRelease(id){
   try {
     const r = await fetch(`https://api.discogs.com/releases/${id}?token=${process.env.DISCOGS_TOKEN}`).then(r=>r.json());
 
-    await sleep(150);
+    await sleep(120);
 
     const artist = r.artists?.[0]?.name || "Unknown";
     const rawTitle = r.title || "Unknown Title";
 
-    // 🔥 GET UPC FROM DISCOGS
     const barcode = r.identifiers?.find(i => i.type === "Barcode")?.value?.replace(/\D/g, "");
 
-    // 🔥 PRICE FROM CSV
     let basePrice = 20;
 
     if (barcode && priceMap[barcode]) {
       basePrice = priceMap[barcode];
     } else {
-      // fallback to Discogs
       try {
         const stats = await fetch(`https://api.discogs.com/marketplace/stats/${id}?token=${process.env.DISCOGS_TOKEN}`).then(r=>r.json());
         basePrice = stats.median_price || stats.lowest_price || 20;
@@ -151,6 +143,62 @@ app.post("/search", async (req, res) => {
   } catch {
     res.json({ results: [] });
   }
+});
+
+// ----------------------------
+// BULK START (FIXED)
+// ----------------------------
+app.post("/bulk-start", async (req,res)=>{
+  const { items } = req.body;
+
+  const jobId = Date.now().toString();
+  jobs[jobId] = { total: items.length, done: 0, results: [] };
+
+  processBulk(jobId, items);
+
+  res.json({ jobId });
+});
+
+async function processBulk(jobId, items){
+  for (let i=0;i<items.length;i++){
+    const barcode = items[i];
+
+    const data = await fetch(
+      `https://api.discogs.com/database/search?barcode=${barcode}&token=${process.env.DISCOGS_TOKEN}`
+    ).then(r=>r.json());
+
+    const top = (data.results||[]).slice(0,5);
+
+    let options = [];
+
+    for (const r of top){
+      const full = await fetchRelease(r.id);
+      if (full) options.push(full);
+    }
+
+    jobs[jobId].results.push({
+      barcode,
+      options,
+      best: options[0]
+    });
+
+    jobs[jobId].done++;
+
+    await sleep(200);
+  }
+}
+
+// ----------------------------
+// BULK STATUS
+// ----------------------------
+app.get("/bulk-status/:id", (req,res)=>{
+  const job = jobs[req.params.id];
+  if (!job) return res.json({});
+
+  res.json({
+    progress: Math.floor((job.done / job.total) * 100),
+    results: job.results
+  });
 });
 
 // ----------------------------
@@ -208,5 +256,4 @@ app.get("/history", (req, res) => {
 
 // ----------------------------
 app.listen(process.env.PORT || 10000, ()=>{
-  console.log("🚀 POS RUNNING (CSV PRICING)");
-});
+  console.log("🚀 POS RUNNING (CSV + BULK FIXED)");
