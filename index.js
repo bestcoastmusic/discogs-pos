@@ -16,6 +16,7 @@ let inventorySyncRunning = false;
 let inventorySyncQueued = false;
 let lastInventorySignature = "";
 let importStatus = createEmptyImportStatus();
+let titleBackfillStatus = createEmptyTitleBackfillStatus();
 let lastInventorySync = {
   running: false,
   queued: false,
@@ -207,6 +208,33 @@ function getImportStatusSnapshot(){
     processed,
     remaining,
     percent
+  };
+}
+
+function createEmptyTitleBackfillStatus(){
+  return {
+    running: false,
+    startedAt: null,
+    finishedAt: null,
+    total: 0,
+    scanned: 0,
+    matched: 0,
+    updated: 0,
+    unchanged: 0,
+    failed: 0,
+    currentTitle: null,
+    currentBarcode: null,
+    error: null
+  };
+}
+
+function getTitleBackfillStatusSnapshot(){
+  return {
+    ...titleBackfillStatus,
+    remaining: Math.max(0, titleBackfillStatus.total - titleBackfillStatus.scanned),
+    percent: titleBackfillStatus.total
+      ? Math.round((titleBackfillStatus.scanned / titleBackfillStatus.total) * 100)
+      : 0
   };
 }
 
@@ -1122,6 +1150,18 @@ async function fetchRelease(id, barcode){
   };
 }
 
+async function findBestReleaseForBarcode(barcode, maxResults = 3){
+  const rawResults = await searchDiscogsByBarcode(barcode);
+  const prioritizedResults = sortResultsByCountryPreference(rawResults).slice(0, maxResults);
+
+  for (const result of prioritizedResults){
+    const full = await fetchRelease(result.id, barcode);
+    if (full) return full;
+  }
+
+  return null;
+}
+
 async function buildReleaseOptions(barcode, mode = "single"){
   const rawResults = await searchDiscogsByBarcode(barcode);
   const prioritizedResults = sortResultsByCountryPreference(rawResults);
@@ -1179,6 +1219,139 @@ async function buildReleaseOptions(barcode, mode = "single"){
   }
 
   return sortResultsByCountryPreference(options);
+}
+
+async function fetchShopifyProductTitle(productId){
+  const res = await shopifyRequest(`/products/${productId}.json?fields=id,title`);
+  if (!res.ok || !res.data?.product){
+    throw new Error(`Shopify product fetch failed (${res.status})`);
+  }
+
+  return res.data.product.title || "";
+}
+
+async function updateShopifyProductTitle(productId, title){
+  const res = await shopifyRequest(`/products/${productId}.json`, {
+    method: "PUT",
+    body: JSON.stringify({
+      product: {
+        id: productId,
+        title
+      }
+    })
+  });
+
+  if (!res.ok || !res.data?.product){
+    throw new Error(`Shopify product title update failed (${res.status})`);
+  }
+
+  return res.data.product;
+}
+
+async function runTitleBackfill(){
+  if (titleBackfillStatus.running){
+    return getTitleBackfillStatusSnapshot();
+  }
+
+  titleBackfillStatus = {
+    ...createEmptyTitleBackfillStatus(),
+    running: true,
+    startedAt: new Date().toISOString()
+  };
+
+  try {
+    console.log("📝 Title backfill started");
+
+    const variants = await fetchAllShopifyVariants();
+    const uniqueProducts = [];
+    const seenProductIds = new Set();
+
+    for (const variant of variants){
+      const barcode = getVariantBarcode(variant);
+      if (!barcode || seenProductIds.has(String(variant.product_id))){
+        continue;
+      }
+
+      seenProductIds.add(String(variant.product_id));
+      uniqueProducts.push({
+        productId: variant.product_id,
+        barcode
+      });
+    }
+
+    titleBackfillStatus = {
+      ...titleBackfillStatus,
+      total: uniqueProducts.length
+    };
+
+    for (const item of uniqueProducts){
+      titleBackfillStatus = {
+        ...titleBackfillStatus,
+        scanned: titleBackfillStatus.scanned + 1,
+        currentBarcode: item.barcode,
+        currentTitle: null
+      };
+
+      try {
+        const bestRelease = await findBestReleaseForBarcode(item.barcode);
+        if (!bestRelease){
+          titleBackfillStatus = {
+            ...titleBackfillStatus,
+            failed: titleBackfillStatus.failed + 1
+          };
+          continue;
+        }
+
+        titleBackfillStatus = {
+          ...titleBackfillStatus,
+          matched: titleBackfillStatus.matched + 1,
+          currentTitle: bestRelease.title
+        };
+
+        const currentTitle = await fetchShopifyProductTitle(item.productId);
+        if (String(currentTitle || "").trim() === String(bestRelease.title || "").trim()){
+          titleBackfillStatus = {
+            ...titleBackfillStatus,
+            unchanged: titleBackfillStatus.unchanged + 1
+          };
+          continue;
+        }
+
+        await updateShopifyProductTitle(item.productId, bestRelease.title);
+        titleBackfillStatus = {
+          ...titleBackfillStatus,
+          updated: titleBackfillStatus.updated + 1
+        };
+
+        console.log("✅ TITLE BACKFILL:", item.barcode, "->", bestRelease.title);
+      } catch (err){
+        titleBackfillStatus = {
+          ...titleBackfillStatus,
+          failed: titleBackfillStatus.failed + 1,
+          error: err.message
+        };
+        console.log("❌ TITLE BACKFILL ERROR:", item.barcode, err.message);
+      }
+
+      await sleep(SHOPIFY_REQUEST_DELAY_MS);
+    }
+  } catch (err){
+    titleBackfillStatus = {
+      ...titleBackfillStatus,
+      error: err.message
+    };
+    console.log("❌ TITLE BACKFILL FAILED:", err.message);
+  } finally {
+    titleBackfillStatus = {
+      ...titleBackfillStatus,
+      running: false,
+      currentTitle: null,
+      currentBarcode: null,
+      finishedAt: new Date().toISOString()
+    };
+  }
+
+  return getTitleBackfillStatusSnapshot();
 }
 
 // ----------------------------
@@ -1411,6 +1584,22 @@ app.post("/sync-inventory",(req,res)=>{
   });
 });
 
+app.post("/backfill-titles",(req,res)=>{
+  if (titleBackfillStatus.running){
+    return res.json({
+      success: true,
+      alreadyRunning: true,
+      backfill: getTitleBackfillStatusSnapshot()
+    });
+  }
+
+  void runTitleBackfill();
+  res.json({
+    success: true,
+    backfill: getTitleBackfillStatusSnapshot()
+  });
+});
+
 // ----------------------------
 async function processQueue(){
   if (queueProcessing || !queue.length) return;
@@ -1478,6 +1667,12 @@ app.get("/sync-status",(req,res)=>{
 app.get("/import-status",(req,res)=>{
   res.json({
     import: getImportStatusSnapshot()
+  });
+});
+
+app.get("/backfill-status",(req,res)=>{
+  res.json({
+    backfill: getTitleBackfillStatusSnapshot()
   });
 });
 
