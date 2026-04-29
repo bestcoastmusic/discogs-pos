@@ -33,6 +33,11 @@ const LOCAL_PRICING_FILE = path.join(__dirname, "pricing.csv");
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, ".data");
 const HISTORY_FILE = process.env.HISTORY_FILE || path.join(DATA_DIR, "history.json");
 const HISTORY_LIMIT = 60;
+const EXCEL_REFRESH_INTERVAL_MS = Math.max(
+  0,
+  Number(process.env.EXCEL_REFRESH_INTERVAL_MS || 60000)
+);
+const SYNC_TRIGGER_SECRET = String(process.env.SYNC_TRIGGER_SECRET || "").trim();
 const SHOPIFY_API_VERSION = "2024-01";
 const SHOPIFY_REQUEST_DELAY_MS = 550;
 const SHOPIFY_MAX_ATTEMPTS = 4;
@@ -105,6 +110,25 @@ function buildInventorySignature(sourceMap = dataMap){
 
 function sleep(ms){
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isAuthorizedSyncRequest(req){
+  if (!SYNC_TRIGGER_SECRET) return true;
+
+  const authHeader = String(req.get("authorization") || "");
+  const bearer = authHeader.startsWith("Bearer ")
+    ? authHeader.slice("Bearer ".length).trim()
+    : "";
+  const headerSecret = String(req.get("x-sync-secret") || "").trim();
+  const querySecret = String(req.query?.token || "").trim();
+  const bodySecret = String(req.body?.token || "").trim();
+
+  return [
+    bearer,
+    headerSecret,
+    querySecret,
+    bodySecret
+  ].some(value => value && value === SYNC_TRIGGER_SECRET);
 }
 
 function ensureDirForFile(filePath){
@@ -536,27 +560,43 @@ function calculatePrice(cost){
 }
 
 // ----------------------------
-async function loadExcel(){
+async function loadExcel(options = {}){
+  const {
+    syncReason = "spreadsheet refresh",
+    forceInventorySync = false
+  } = options;
+
   console.log("🔄 Loading Excel...");
   try {
     let wb;
+    let source = "unknown";
 
     if (process.env.CSV_URL){
       const res = await fetch(process.env.CSV_URL);
       if (!res.ok){
         console.log("❌ Excel fetch failed:", res.status);
-        return;
+        return {
+          ok: false,
+          source: "csv_url",
+          error: `Spreadsheet fetch failed (${res.status})`
+        };
       }
 
       const buffer = await res.arrayBuffer();
       wb = XLSX.read(buffer, { type: "buffer" });
+      source = "csv_url";
       console.log("🌐 Loaded spreadsheet from CSV_URL");
     } else if (fs.existsSync(LOCAL_PRICING_FILE)) {
       wb = XLSX.readFile(LOCAL_PRICING_FILE);
+      source = "local_file";
       console.log("📄 Loaded local pricing.csv");
     } else {
       console.log("❌ CSV_URL missing and pricing.csv not found");
-      return;
+      return {
+        ok: false,
+        source: "missing",
+        error: "CSV_URL missing and pricing.csv not found"
+      };
     }
 
     const sheet = wb.Sheets[wb.SheetNames[0]];
@@ -580,23 +620,51 @@ async function loadExcel(){
 
     dataMap = nextDataMap;
 
-    console.log("✅ Excel Loaded:", Object.keys(dataMap).length);
+    const loadedCount = Object.keys(dataMap).length;
+    console.log("✅ Excel Loaded:", loadedCount);
 
     const nextSignature = buildInventorySignature(nextDataMap);
-    if (nextSignature !== lastInventorySignature){
+    const changed = nextSignature !== lastInventorySignature;
+    if (changed){
       lastInventorySignature = nextSignature;
-      queueInventorySync("spreadsheet refresh");
+    }
+
+    let triggeredSync = false;
+    if (forceInventorySync || changed){
+      queueInventorySync(syncReason);
+      triggeredSync = true;
     } else {
       console.log("⏭️ Inventory sync skipped: spreadsheet stock unchanged");
     }
 
+    return {
+      ok: true,
+      source,
+      rowsRead: rows.length,
+      loadedCount,
+      changed,
+      triggeredSync,
+      forced: forceInventorySync
+    };
+
   } catch (e){
     console.log("❌ Excel load failed:", e.message);
+    return {
+      ok: false,
+      source: "error",
+      error: e.message
+    };
   }
 }
 
-loadExcel();
-setInterval(loadExcel, 60000);
+void loadExcel();
+if (EXCEL_REFRESH_INTERVAL_MS > 0){
+  setInterval(() => {
+    void loadExcel();
+  }, EXCEL_REFRESH_INTERVAL_MS);
+} else {
+  console.log("⏸️ Spreadsheet polling disabled");
+}
 loadHistoryFromDisk();
 
 // ----------------------------
@@ -1572,10 +1640,27 @@ app.post("/import",(req,res)=>{
   });
 });
 
-app.post("/sync-inventory",(req,res)=>{
-  queueInventorySync("manual request");
+app.post("/sync-inventory", async (req,res)=>{
+  const refresh = await loadExcel({
+    syncReason: "manual request",
+    forceInventorySync: true
+  });
+
+  if (!refresh?.ok){
+    return res.status(500).json({
+      success: false,
+      refresh,
+      sync: {
+        ...lastInventorySync,
+        running: inventorySyncRunning,
+        queued: inventorySyncQueued
+      }
+    });
+  }
+
   res.json({
     success: true,
+    refresh,
     sync: {
       ...lastInventorySync,
       running: inventorySyncRunning,
@@ -1583,6 +1668,45 @@ app.post("/sync-inventory",(req,res)=>{
     }
   });
 });
+
+async function handleScheduledSync(req, res){
+  if (!isAuthorizedSyncRequest(req)){
+    return res.status(403).json({
+      success: false,
+      error: "Unauthorized scheduled sync request"
+    });
+  }
+
+  const refresh = await loadExcel({
+    syncReason: "scheduled sync",
+    forceInventorySync: true
+  });
+
+  if (!refresh?.ok){
+    return res.status(500).json({
+      success: false,
+      refresh,
+      sync: {
+        ...lastInventorySync,
+        running: inventorySyncRunning,
+        queued: inventorySyncQueued
+      }
+    });
+  }
+
+  res.json({
+    success: true,
+    refresh,
+    sync: {
+      ...lastInventorySync,
+      running: inventorySyncRunning,
+      queued: inventorySyncQueued
+    }
+  });
+}
+
+app.get("/scheduled-sync", handleScheduledSync);
+app.post("/scheduled-sync", handleScheduledSync);
 
 app.post("/backfill-titles",(req,res)=>{
   if (titleBackfillStatus.running){
