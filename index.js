@@ -33,6 +33,7 @@ const HISTORY_FILE = process.env.HISTORY_FILE || path.join(DATA_DIR, "history.js
 const HISTORY_LIMIT = 60;
 const SHOPIFY_API_VERSION = "2024-01";
 const SHOPIFY_REQUEST_DELAY_MS = 550;
+const SHOPIFY_MAX_ATTEMPTS = 4;
 const DISCOGS_REQUEST_DELAY_MS = 250;
 const DISCOGS_FETCH_GAP_MS = 1200;
 const DISCOGS_BULK_OPTION_LIMIT = 3;
@@ -45,13 +46,15 @@ const COUNTRY_PREFERENCE = [
   "United Kingdom",
   "Europe"
 ];
-const VARIANT_CACHE_TTL_MS = 60000;
+const VARIANT_CACHE_TTL_MS = 300000;
 let shopifyVariantCache = {
   fetchedAt: 0,
   variants: []
 };
+let shopifyVariantFetchPromise = null;
 let lastDiscogsRequestAt = 0;
 let discogsRequestQueue = Promise.resolve();
+let queueProcessing = false;
 
 // ----------------------------
 function normalizeBarcode(val){
@@ -532,19 +535,38 @@ async function shopifyRequest(pathOrUrl, options = {}){
     ...(options.headers || {})
   };
 
-  const res = await fetch(url, { ...options, headers });
-  const text = await res.text();
+  for (let attempt = 1; attempt <= SHOPIFY_MAX_ATTEMPTS; attempt += 1){
+    const res = await fetch(url, { ...options, headers });
+    const text = await res.text();
 
-  let data = {};
-  if (text){
-    try {
-      data = JSON.parse(text);
-    } catch {
-      data = { raw: text };
+    let data = {};
+    if (text){
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { raw: text };
+      }
     }
+
+    if (res.status === 429 && attempt < SHOPIFY_MAX_ATTEMPTS){
+      const retryAfterHeader = Number(res.headers.get("retry-after") || 0);
+      const retryWaitMs = retryAfterHeader > 0
+        ? retryAfterHeader * 1000
+        : Math.max(1500, SHOPIFY_REQUEST_DELAY_MS * (attempt + 1));
+      console.log("⏳ Shopify rate limit hit, retrying in", retryWaitMs, "ms");
+      await sleep(retryWaitMs);
+      continue;
+    }
+
+    return { ok: res.ok, status: res.status, data, headers: res.headers };
   }
 
-  return { ok: res.ok, status: res.status, data, headers: res.headers };
+  return {
+    ok: false,
+    status: 429,
+    data: { errors: "Shopify request failed after retries" },
+    headers: new Headers()
+  };
 }
 
 function getNextLink(linkHeader){
@@ -561,6 +583,40 @@ function invalidateVariantCache(){
   shopifyVariantCache = {
     fetchedAt: 0,
     variants: []
+  };
+  shopifyVariantFetchPromise = null;
+}
+
+function pickVariantCacheFields(variant){
+  if (!variant) return null;
+  return {
+    id: variant.id,
+    product_id: variant.product_id,
+    inventory_item_id: variant.inventory_item_id,
+    barcode: variant.barcode || "",
+    sku: variant.sku || ""
+  };
+}
+
+function upsertVariantInCache(variant){
+  const nextVariant = pickVariantCacheFields(variant);
+  if (!nextVariant) return;
+
+  const variants = [...(shopifyVariantCache.variants || [])];
+  const index = variants.findIndex(item => String(item.id) === String(nextVariant.id));
+
+  if (index >= 0){
+    variants[index] = {
+      ...variants[index],
+      ...nextVariant
+    };
+  } else {
+    variants.push(nextVariant);
+  }
+
+  shopifyVariantCache = {
+    fetchedAt: Date.now(),
+    variants
   };
 }
 
@@ -583,16 +639,25 @@ async function fetchAllShopifyVariants(){
 
 async function getCachedShopifyVariants(force = false){
   const freshEnough = (Date.now() - shopifyVariantCache.fetchedAt) < VARIANT_CACHE_TTL_MS;
-  if (!force && freshEnough && shopifyVariantCache.variants.length){
+  if (!force && freshEnough){
     return shopifyVariantCache.variants;
   }
 
-  const variants = await fetchAllShopifyVariants();
-  shopifyVariantCache = {
-    fetchedAt: Date.now(),
-    variants
-  };
-  return variants;
+  if (!force && shopifyVariantFetchPromise){
+    return await shopifyVariantFetchPromise;
+  }
+
+  shopifyVariantFetchPromise = fetchAllShopifyVariants();
+  try {
+    const variants = await shopifyVariantFetchPromise;
+    shopifyVariantCache = {
+      fetchedAt: Date.now(),
+      variants
+    };
+    return variants;
+  } finally {
+    shopifyVariantFetchPromise = null;
+  }
 }
 
 async function findExistingVariantByBarcode(barcode){
@@ -1160,11 +1225,12 @@ async function upsertProduct(item){
     console.log("♻️ EXISTING PRODUCT FOUND:", existingVariant.id, item.barcode);
     variant = await updateShopifyProduct(existingVariant, item);
     item.syncAction = "updated";
+    upsertVariantInCache(variant);
   } else {
     const createdProduct = await createShopifyProduct(item);
     variant = createdProduct.variants?.[0];
     item.syncAction = "created";
-    invalidateVariantCache();
+    upsertVariantInCache(variant);
   }
 
   if (!variant?.inventory_item_id){
@@ -1172,7 +1238,6 @@ async function upsertProduct(item){
   }
 
   await syncInventoryForVariant(variant, item.stock);
-  invalidateVariantCache();
   return variant;
 }
 
@@ -1204,20 +1269,27 @@ app.post("/sync-inventory",(req,res)=>{
 
 // ----------------------------
 async function processQueue(){
-  if (!queue.length) return;
+  if (queueProcessing || !queue.length) return;
 
-  const job = queue.shift();
-  const data = await fetchRelease(job.id, job.barcode);
-  if (!data) return;
-
-  const finalItem = applyItemOverrides(data, job.overrides);
-  finalItem.condition = job.condition || "NM";
+  queueProcessing = true;
+  let job = null;
 
   try {
-    await upsertProduct(finalItem);
-    pushHistoryEntry(finalItem);
-  } catch (err){
-    console.log("❌ IMPORT ERROR:", err.message);
+    job = queue.shift();
+    const data = await fetchRelease(job.id, job.barcode);
+    if (!data) return;
+
+    const finalItem = applyItemOverrides(data, job.overrides);
+    finalItem.condition = job.condition || "NM";
+
+    try {
+      await upsertProduct(finalItem);
+      pushHistoryEntry(finalItem);
+    } catch (err){
+      console.log("❌ IMPORT ERROR:", err.message);
+    }
+  } finally {
+    queueProcessing = false;
   }
 }
 
