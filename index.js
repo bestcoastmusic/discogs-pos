@@ -337,6 +337,38 @@ function cleanDiscogsArtistName(value){
     .trim();
 }
 
+function titleCaseWords(value){
+  return String(value || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function buildShopifyReleaseTitle(artist, releaseTitle, color){
+  const baseTitle = [artist, releaseTitle]
+    .map(value => String(value || "").trim())
+    .filter(Boolean)
+    .join(" - ");
+  const cleanColor = String(color || "").trim().toLowerCase();
+
+  if (!cleanColor){
+    return baseTitle;
+  }
+
+  const colorLabel = titleCaseWords(cleanColor);
+  const lowerBase = baseTitle.toLowerCase();
+
+  if (
+    lowerBase.includes(`[${cleanColor}]`) ||
+    lowerBase.includes(`(${cleanColor})`)
+  ){
+    return baseTitle;
+  }
+
+  return `${baseTitle} [${colorLabel}]`;
+}
+
 function normalizeComparableTitle(value){
   return String(value || "")
     .toLowerCase()
@@ -1068,7 +1100,7 @@ async function fetchRelease(id, barcode){
   return {
     id,
     barcode: resolvedBarcode,
-    title: `${artist} - ${title}`,
+    title: buildShopifyReleaseTitle(artist, title, finalColor),
     description,
     descriptionText,
     image: r.images?.[0]?.uri || "",
