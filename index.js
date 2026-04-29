@@ -17,6 +17,7 @@ let inventorySyncQueued = false;
 let lastInventorySignature = "";
 let importStatus = createEmptyImportStatus();
 let titleBackfillStatus = createEmptyTitleBackfillStatus();
+let tagBackfillStatus = createEmptyTagBackfillStatus();
 let lastInventorySync = {
   running: false,
   queued: false,
@@ -271,12 +272,39 @@ function createEmptyTitleBackfillStatus(){
   };
 }
 
+function createEmptyTagBackfillStatus(){
+  return {
+    running: false,
+    startedAt: null,
+    finishedAt: null,
+    total: 0,
+    scanned: 0,
+    matched: 0,
+    updated: 0,
+    unchanged: 0,
+    failed: 0,
+    currentTitle: null,
+    currentBarcode: null,
+    error: null
+  };
+}
+
 function getTitleBackfillStatusSnapshot(){
   return {
     ...titleBackfillStatus,
     remaining: Math.max(0, titleBackfillStatus.total - titleBackfillStatus.scanned),
     percent: titleBackfillStatus.total
       ? Math.round((titleBackfillStatus.scanned / titleBackfillStatus.total) * 100)
+      : 0
+  };
+}
+
+function getTagBackfillStatusSnapshot(){
+  return {
+    ...tagBackfillStatus,
+    remaining: Math.max(0, tagBackfillStatus.total - tagBackfillStatus.scanned),
+    percent: tagBackfillStatus.total
+      ? Math.round((tagBackfillStatus.scanned / tagBackfillStatus.total) * 100)
       : 0
   };
 }
@@ -1347,6 +1375,15 @@ async function fetchShopifyProductTitle(productId){
   return res.data.product.title || "";
 }
 
+async function fetchShopifyProductMetadata(productId){
+  const res = await shopifyRequest(`/products/${productId}.json?fields=id,title,tags,product_type`);
+  if (!res.ok || !res.data?.product){
+    throw new Error(`Shopify product fetch failed (${res.status})`);
+  }
+
+  return res.data.product;
+}
+
 async function updateShopifyProductTitle(productId, title){
   const res = await shopifyRequest(`/products/${productId}.json`, {
     method: "PUT",
@@ -1360,6 +1397,25 @@ async function updateShopifyProductTitle(productId, title){
 
   if (!res.ok || !res.data?.product){
     throw new Error(`Shopify product title update failed (${res.status})`);
+  }
+
+  return res.data.product;
+}
+
+async function updateShopifyProductTagsAndType(productId, { tags, productType }){
+  const res = await shopifyRequest(`/products/${productId}.json`, {
+    method: "PUT",
+    body: JSON.stringify({
+      product: {
+        id: productId,
+        tags,
+        product_type: productType
+      }
+    })
+  });
+
+  if (!res.ok || !res.data?.product){
+    throw new Error(`Shopify product tag update failed (${res.status})`);
   }
 
   return res.data.product;
@@ -1469,6 +1525,145 @@ async function runTitleBackfill(){
   }
 
   return getTitleBackfillStatusSnapshot();
+}
+
+async function runTagBackfill(){
+  if (tagBackfillStatus.running){
+    return getTagBackfillStatusSnapshot();
+  }
+
+  tagBackfillStatus = {
+    ...createEmptyTagBackfillStatus(),
+    running: true,
+    startedAt: new Date().toISOString()
+  };
+
+  try {
+    console.log("🏷️ Tag backfill started");
+
+    const refresh = await loadExcel({
+      syncReason: "tag backfill refresh",
+      forceInventorySync: false
+    });
+
+    if (!refresh?.ok){
+      throw new Error(refresh?.error || "Spreadsheet refresh failed before tag backfill");
+    }
+
+    const variants = await fetchAllShopifyVariants();
+    const uniqueProducts = [];
+    const seenProductIds = new Set();
+
+    for (const variant of variants){
+      if (seenProductIds.has(String(variant.product_id))){
+        continue;
+      }
+
+      seenProductIds.add(String(variant.product_id));
+      uniqueProducts.push({
+        productId: variant.product_id,
+        barcode: getVariantBarcode(variant)
+      });
+    }
+
+    tagBackfillStatus = {
+      ...tagBackfillStatus,
+      total: uniqueProducts.length
+    };
+
+    for (const item of uniqueProducts){
+      tagBackfillStatus = {
+        ...tagBackfillStatus,
+        scanned: tagBackfillStatus.scanned + 1,
+        currentBarcode: item.barcode || null,
+        currentTitle: null
+      };
+
+      try {
+        const currentProduct = await fetchShopifyProductMetadata(item.productId);
+        tagBackfillStatus = {
+          ...tagBackfillStatus,
+          currentTitle: currentProduct.title || null
+        };
+
+        const spreadsheetMatch = item.barcode ? findMatch(item.barcode) : null;
+        const desiredGenre = resolveCollectionTag(
+          spreadsheetMatch?.genre || currentProduct.product_type || ""
+        ) || "Other";
+        const desiredTags = buildShopifyTags({ genre: desiredGenre });
+
+        if (!desiredTags){
+          tagBackfillStatus = {
+            ...tagBackfillStatus,
+            failed: tagBackfillStatus.failed + 1
+          };
+          continue;
+        }
+
+        tagBackfillStatus = {
+          ...tagBackfillStatus,
+          matched: tagBackfillStatus.matched + 1
+        };
+
+        const currentTags = String(currentProduct.tags || "")
+          .split(",")
+          .map(tag => tag.trim())
+          .filter(Boolean)
+          .join(", ");
+        const currentProductType = String(currentProduct.product_type || "").trim();
+
+        if (currentTags === desiredTags && currentProductType === desiredGenre){
+          tagBackfillStatus = {
+            ...tagBackfillStatus,
+            unchanged: tagBackfillStatus.unchanged + 1
+          };
+          continue;
+        }
+
+        await updateShopifyProductTagsAndType(item.productId, {
+          tags: desiredTags,
+          productType: desiredGenre
+        });
+
+        tagBackfillStatus = {
+          ...tagBackfillStatus,
+          updated: tagBackfillStatus.updated + 1
+        };
+
+        console.log(
+          "✅ TAG BACKFILL:",
+          item.barcode || `product:${item.productId}`,
+          "->",
+          desiredTags
+        );
+      } catch (err){
+        tagBackfillStatus = {
+          ...tagBackfillStatus,
+          failed: tagBackfillStatus.failed + 1,
+          error: err.message
+        };
+        console.log("❌ TAG BACKFILL ERROR:", item.barcode || item.productId, err.message);
+      }
+
+      await sleep(SHOPIFY_REQUEST_DELAY_MS);
+    }
+  } catch (err){
+    tagBackfillStatus = {
+      ...tagBackfillStatus,
+      error: err.message
+    };
+    console.log("❌ TAG BACKFILL FAILED:", err.message);
+  } finally {
+    tagBackfillStatus = {
+      ...tagBackfillStatus,
+      running: false,
+      currentTitle: null,
+      currentBarcode: null,
+      finishedAt: new Date().toISOString()
+    };
+  }
+
+  return getTagBackfillStatusSnapshot();
 }
 
 // ----------------------------
@@ -1775,6 +1970,22 @@ app.post("/backfill-titles",(req,res)=>{
   });
 });
 
+app.post("/backfill-tags",(req,res)=>{
+  if (tagBackfillStatus.running){
+    return res.json({
+      success: true,
+      alreadyRunning: true,
+      backfill: getTagBackfillStatusSnapshot()
+    });
+  }
+
+  void runTagBackfill();
+  res.json({
+    success: true,
+    backfill: getTagBackfillStatusSnapshot()
+  });
+});
+
 // ----------------------------
 async function processQueue(){
   if (queueProcessing || !queue.length) return;
@@ -1848,6 +2059,12 @@ app.get("/import-status",(req,res)=>{
 app.get("/backfill-status",(req,res)=>{
   res.json({
     backfill: getTitleBackfillStatusSnapshot()
+  });
+});
+
+app.get("/backfill-tags-status",(req,res)=>{
+  res.json({
+    backfill: getTagBackfillStatusSnapshot()
   });
 });
 
