@@ -38,6 +38,25 @@ const EXCEL_REFRESH_INTERVAL_MS = Math.max(
   Number(process.env.EXCEL_REFRESH_INTERVAL_MS || 60000)
 );
 const SYNC_TRIGGER_SECRET = String(process.env.SYNC_TRIGGER_SECRET || "").trim();
+const COLLECTION_TAG_ALLOWLIST = new Set(
+  String(process.env.SHOPIFY_COLLECTION_TAGS || "")
+    .split(/[,\n]/)
+    .map(tag => tag.trim().replace(/[_-]+/g, " ").replace(/\s+/g, " ").toLowerCase())
+    .filter(Boolean)
+);
+const DEFAULT_COLLECTION_TAGS = new Map([
+  ["rock", "Rock"],
+  ["jazz", "Jazz"],
+  ["other", "Other"],
+  ["r&b", "R&B"],
+  ["reggae", "Reggae"],
+  ["electronic", "Electronic"],
+  ["pop", "Pop"],
+  ["hip hop", "Hip Hop"],
+  ["country", "Country"],
+  ["classical", "Classical"],
+  ["metal", "Metal"]
+]);
 const SHOPIFY_API_VERSION = "2024-01";
 const SHOPIFY_REQUEST_DELAY_MS = 550;
 const SHOPIFY_MAX_ATTEMPTS = 4;
@@ -380,7 +399,37 @@ function extractExtras(str){
 }
 
 function simplifyGenre(val){
-  return val ? val.split(/[\/,]/)[0].trim() : "Other";
+  const primaryGenre = String(val || "")
+    .split(/[\/,]/)[0]
+    .trim();
+
+  return resolveCollectionTag(primaryGenre) || "Other";
+}
+
+function normalizeCollectionTagKey(value){
+  return String(value || "")
+    .trim()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function resolveCollectionTag(value){
+  const key = normalizeCollectionTagKey(value);
+  if (!key) return "";
+
+  const canonical = DEFAULT_COLLECTION_TAGS.get(key);
+  if (!canonical) return "";
+
+  if (COLLECTION_TAG_ALLOWLIST.size && !COLLECTION_TAG_ALLOWLIST.has(normalizeCollectionTagKey(canonical))){
+    return "";
+  }
+
+  return canonical;
+}
+
+function buildShopifyTags(item){
+  return resolveCollectionTag(item?.genre) || "Other";
 }
 
 function cleanDiscogsArtistName(value){
@@ -1513,6 +1562,7 @@ async function processBulkJob(jobId, items){
 
 // ----------------------------
 async function createShopifyProduct(item){
+  const tags = buildShopifyTags(item);
   const res = await shopifyRequest("/products.json", {
     method: "POST",
     body: JSON.stringify({
@@ -1520,7 +1570,7 @@ async function createShopifyProduct(item){
         title: item.title,
         body_html: item.description,
         product_type: item.genre,
-        tags: `${item.genre}, ${item.color}`,
+        tags,
         images: item.image ? [{ src: item.image }] : [],
         variants: [{
           price: item.basePrice,
@@ -1543,6 +1593,7 @@ async function createShopifyProduct(item){
 }
 
 async function updateShopifyProduct(variant, item){
+  const tags = buildShopifyTags(item);
   const productRes = await shopifyRequest(`/products/${variant.product_id}.json`, {
     method: "PUT",
     body: JSON.stringify({
@@ -1551,7 +1602,7 @@ async function updateShopifyProduct(variant, item){
         title: item.title,
         body_html: item.description,
         product_type: item.genre,
-        tags: `${item.genre}, ${item.color}`
+        tags
       }
     })
   });
