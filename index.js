@@ -15,6 +15,7 @@ let dataMap = {};
 let inventorySyncRunning = false;
 let inventorySyncQueued = false;
 let lastInventorySignature = "";
+let importStatus = createEmptyImportStatus();
 let lastInventorySync = {
   running: false,
   queued: false,
@@ -107,6 +108,106 @@ function sleep(ms){
 
 function ensureDirForFile(filePath){
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
+}
+
+function createEmptyImportStatus(){
+  return {
+    running: false,
+    queued: 0,
+    inProgress: 0,
+    total: 0,
+    completed: 0,
+    failed: 0,
+    startedAt: null,
+    lastFinishedAt: null,
+    currentTitle: null,
+    currentBarcode: null,
+    lastError: null
+  };
+}
+
+function hasActiveImportWork(){
+  return queueProcessing || queue.length > 0 || importStatus.inProgress > 0 || importStatus.queued > 0;
+}
+
+function beginImportBatch(count){
+  if (!count) return;
+
+  if (!hasActiveImportWork()){
+    importStatus = {
+      ...createEmptyImportStatus(),
+      running: true,
+      queued: count,
+      total: count,
+      startedAt: new Date().toISOString()
+    };
+    return;
+  }
+
+  importStatus = {
+    ...importStatus,
+    running: true,
+    queued: importStatus.queued + count,
+    total: importStatus.total + count,
+    startedAt: importStatus.startedAt || new Date().toISOString()
+  };
+}
+
+function markImportStarted(job){
+  importStatus = {
+    ...importStatus,
+    running: true,
+    queued: Math.max(0, queue.length),
+    inProgress: 1,
+    currentTitle: null,
+    currentBarcode: job?.barcode || null
+  };
+}
+
+function markImportPrepared(item, job){
+  importStatus = {
+    ...importStatus,
+    currentTitle: item?.title || null,
+    currentBarcode: item?.barcode || job?.barcode || null
+  };
+}
+
+function finalizeImportItem({ ok, error } = {}){
+  importStatus = {
+    ...importStatus,
+    running: queue.length > 0,
+    queued: Math.max(0, queue.length),
+    inProgress: 0,
+    completed: ok ? importStatus.completed + 1 : importStatus.completed,
+    failed: ok ? importStatus.failed : importStatus.failed + 1,
+    currentTitle: null,
+    currentBarcode: null,
+    lastError: error || importStatus.lastError
+  };
+
+  if (!hasActiveImportWork()){
+    importStatus = {
+      ...importStatus,
+      running: false,
+      lastFinishedAt: new Date().toISOString()
+    };
+  }
+}
+
+function getImportStatusSnapshot(){
+  const processed = importStatus.completed + importStatus.failed;
+  const remaining = Math.max(0, importStatus.total - processed);
+  const percent = importStatus.total
+    ? Math.round((processed / importStatus.total) * 100)
+    : 0;
+
+  return {
+    ...importStatus,
+    running: hasActiveImportWork(),
+    processed,
+    remaining,
+    percent
+  };
 }
 
 async function reserveDiscogsRequestSlot(){
@@ -1243,7 +1344,10 @@ async function upsertProduct(item){
 
 // ----------------------------
 app.post("/import",(req,res)=>{
-  (req.body.items || []).forEach(i=>{
+  const items = req.body.items || [];
+  beginImportBatch(items.length);
+
+  items.forEach(i=>{
     queue.push({
       id: i.id,
       barcode: i.barcode,
@@ -1252,7 +1356,15 @@ app.post("/import",(req,res)=>{
       overrides: i.overrides || null
     });
   });
-  res.json({ success:true });
+  importStatus = {
+    ...importStatus,
+    queued: queue.length
+  };
+
+  res.json({
+    success: true,
+    import: getImportStatusSnapshot()
+  });
 });
 
 app.post("/sync-inventory",(req,res)=>{
@@ -1276,20 +1388,41 @@ async function processQueue(){
 
   try {
     job = queue.shift();
+    markImportStarted(job);
     const data = await fetchRelease(job.id, job.barcode);
-    if (!data) return;
+    if (!data){
+      finalizeImportItem({
+        ok: false,
+        error: "Release details could not be prepared"
+      });
+      return;
+    }
 
     const finalItem = applyItemOverrides(data, job.overrides);
     finalItem.condition = job.condition || "NM";
+    markImportPrepared(finalItem, job);
 
     try {
       await upsertProduct(finalItem);
       pushHistoryEntry(finalItem);
+      finalizeImportItem({ ok: true });
     } catch (err){
       console.log("❌ IMPORT ERROR:", err.message);
+      finalizeImportItem({
+        ok: false,
+        error: err.message
+      });
     }
   } finally {
     queueProcessing = false;
+
+    if (!hasActiveImportWork()){
+      importStatus = {
+        ...importStatus,
+        running: false,
+        lastFinishedAt: importStatus.lastFinishedAt || new Date().toISOString()
+      };
+    }
   }
 }
 
@@ -1307,6 +1440,12 @@ app.get("/sync-status",(req,res)=>{
       running: inventorySyncRunning,
       queued: inventorySyncQueued
     }
+  });
+});
+
+app.get("/import-status",(req,res)=>{
+  res.json({
+    import: getImportStatusSnapshot()
   });
 });
 

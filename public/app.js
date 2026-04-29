@@ -21,8 +21,10 @@ window.onload = function(){
 
   loadHistory();
   loadSyncStatus();
+  loadImportStatus();
   setInterval(loadHistory, 2000);
   setInterval(loadSyncStatus, 5000);
+  setInterval(loadImportStatus, 1500);
 };
 
 function formatMoney(value){
@@ -282,6 +284,62 @@ function renderSyncStatus(sync = {}){
   `;
 }
 
+function renderImportStatus(importState = {}){
+  const box = document.getElementById("importStatus");
+  if (!box) return;
+
+  const total = Number(importState.total || 0);
+  const completed = Number(importState.completed || 0);
+  const failed = Number(importState.failed || 0);
+  const processed = Number(importState.processed ?? (completed + failed));
+  const remaining = Number(importState.remaining ?? Math.max(0, total - processed));
+  const percent = Number(importState.percent ?? (total ? Math.round((processed / total) * 100) : 0));
+  const stateLabel = importState.running
+    ? "Importing"
+    : total
+      ? failed
+        ? "Finished With Issues"
+        : "Import Complete"
+      : "Waiting";
+  const stateTone = importState.running
+    ? "warn"
+    : failed
+      ? "bad"
+      : "good";
+
+  box.innerHTML = `
+    <div class="status-card">
+      <div class="status-badges">
+        <span class="status-pill ${stateTone}">${stateLabel}</span>
+        <span class="status-pill">${completed} imported</span>
+        <span class="status-pill">${remaining} left</span>
+      </div>
+      <div class="status-stack" style="margin-top:14px;">
+        <div class="progress-shell">
+          <div class="progress-bar" style="width:${Math.max(0, Math.min(100, percent))}%;"></div>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Progress</span>
+          <span class="status-value">${processed} of ${total || 0}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Failed</span>
+          <span class="status-value">${failed}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Current Item</span>
+          <span class="status-value">${importState.currentTitle || importState.currentBarcode || (importState.running ? "Preparing next item" : "No active import")}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Started</span>
+          <span class="status-value">${formatTimestamp(importState.startedAt)}</span>
+        </div>
+        ${importState.lastError ? `<p class="muted-note">Last import error: ${importState.lastError}</p>` : ""}
+      </div>
+    </div>
+  `;
+}
+
 async function loadSyncStatus(){
   try {
     const res = await fetch("/sync-status");
@@ -290,6 +348,18 @@ async function loadSyncStatus(){
   } catch {
     renderSyncStatus({
       error: "Could not load sync status"
+    });
+  }
+}
+
+async function loadImportStatus(){
+  try {
+    const res = await fetch("/import-status");
+    const data = await res.json();
+    renderImportStatus(data.import || {});
+  } catch {
+    renderImportStatus({
+      lastError: "Could not load import status"
     });
   }
 }
@@ -440,6 +510,7 @@ async function addAllBulk(){
     body: JSON.stringify({ items })
   });
 
+  await loadImportStatus();
   alert(`Queued ${items.length} bulk item${items.length === 1 ? "" : "s"}`);
 }
 
@@ -621,6 +692,7 @@ function renderCard(options, container){
       })
     });
 
+    await loadImportStatus();
     alert("Added");
   };
 
@@ -994,6 +1066,7 @@ function renderBulkCard(entry, container){
       body: JSON.stringify({ items: [item] })
     });
 
+    await loadImportStatus();
     alert("Added");
   };
 

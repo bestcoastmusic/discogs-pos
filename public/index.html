@@ -540,6 +540,8 @@
 
     .status-value {
       text-align: right;
+      max-width: 210px;
+      overflow-wrap: anywhere;
     }
 
     .status-badges {
@@ -700,6 +702,19 @@
             <div class="sync-actions">
               <button id="syncNowBtn" class="secondary-btn">Sync Inventory Now</button>
             </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-inner">
+            <div class="section-head">
+              <div>
+                <h2>Import Queue</h2>
+                <p class="section-copy">See how many items are imported, failed, and still left in the current batch.</p>
+              </div>
+            </div>
+
+            <div id="importStatus" class="status-stack"></div>
           </div>
         </section>
 
