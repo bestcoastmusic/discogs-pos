@@ -518,7 +518,7 @@ function renderCard(options, container){
   const entry = {
     options,
     selectedId: options[0]?.id || "",
-    condition: "NM",
+    condition: "M",
     editorOpen: false,
     edits: {}
   };
@@ -1307,7 +1307,7 @@ async function loadHistory(){
     const parts = [
       `$${formatMoney(item.basePrice || item.price)}`,
       item.syncAction ? titleCase(item.syncAction) : null,
-      item.condition || "NM",
+      item.condition || "M",
       item.stock > 0 ? `${item.stock} synced` : "0 stock",
       item.barcode ? `UPC ${item.barcode}` : null,
       item.syncedAt ? formatTimestamp(item.syncedAt) : null

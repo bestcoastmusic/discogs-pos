@@ -1870,7 +1870,7 @@ app.post("/import",(req,res)=>{
     queue.push({
       id: i.id,
       barcode: i.barcode,
-      condition: i.condition || "NM"
+      condition: i.condition || "M"
       ,
       overrides: i.overrides || null
     });
@@ -2006,7 +2006,7 @@ async function processQueue(){
     }
 
     const finalItem = applyItemOverrides(data, job.overrides);
-    finalItem.condition = job.condition || "NM";
+    finalItem.condition = job.condition || "M";
     markImportPrepared(finalItem, job);
 
     try {
