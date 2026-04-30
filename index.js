@@ -21,6 +21,7 @@ let tagBackfillStatus = createEmptyTagBackfillStatus();
 let manualOverrides = {};
 let missingSpreadsheetMatches = [];
 let maintenanceJobs = createDefaultMaintenanceJobs();
+let spreadsheetState = createDefaultSpreadsheetState();
 let lastInventorySync = {
   running: false,
   queued: false,
@@ -39,6 +40,7 @@ const HISTORY_FILE = process.env.HISTORY_FILE || path.join(DATA_DIR, "history.js
 const MANUAL_OVERRIDES_FILE = process.env.MANUAL_OVERRIDES_FILE || path.join(DATA_DIR, "manual-overrides.json");
 const MISSING_MATCHES_FILE = process.env.MISSING_MATCHES_FILE || path.join(DATA_DIR, "missing-matches.json");
 const MAINTENANCE_JOBS_FILE = process.env.MAINTENANCE_JOBS_FILE || path.join(DATA_DIR, "maintenance-jobs.json");
+const SPREADSHEET_STATE_FILE = process.env.SPREADSHEET_STATE_FILE || path.join(DATA_DIR, "spreadsheet-state.json");
 const HISTORY_LIMIT = 60;
 const MISSING_MATCH_LIMIT = 120;
 const EXCEL_REFRESH_INTERVAL_MS = Math.max(
@@ -49,6 +51,11 @@ const SYNC_TRIGGER_SECRET = String(process.env.SYNC_TRIGGER_SECRET || "").trim()
 const MAINTENANCE_CHUNK_SIZE = Math.max(
   5,
   Number(process.env.MAINTENANCE_CHUNK_SIZE || 25)
+);
+const AUTO_IMPORT_NEW_TITLES = String(process.env.AUTO_IMPORT_NEW_TITLES || "1").trim() !== "0";
+const AUTO_IMPORT_MAX_PER_REFRESH = Math.max(
+  1,
+  Number(process.env.AUTO_IMPORT_MAX_PER_REFRESH || 20)
 );
 const COLLECTION_TAG_ALLOWLIST = new Set(
   String(process.env.SHOPIFY_COLLECTION_TAGS || "")
@@ -328,6 +335,15 @@ function createDefaultMaintenanceJobs(){
   };
 }
 
+function createDefaultSpreadsheetState(){
+  return {
+    knownBarcodes: [],
+    pendingAutoImports: [],
+    seededAt: null,
+    lastSeenAt: null
+  };
+}
+
 function getTitleBackfillStatusSnapshot(){
   return {
     ...titleBackfillStatus,
@@ -499,6 +515,26 @@ function persistMaintenanceJobs(){
   writeJsonFile(MAINTENANCE_JOBS_FILE, maintenanceJobs);
 }
 
+function loadSpreadsheetStateFromDisk(){
+  const defaults = createDefaultSpreadsheetState();
+  const parsed = loadJsonFile(SPREADSHEET_STATE_FILE, defaults);
+
+  spreadsheetState = {
+    knownBarcodes: Array.isArray(parsed?.knownBarcodes)
+      ? [...new Set(parsed.knownBarcodes.map(normalizeBarcode).filter(Boolean))]
+      : defaults.knownBarcodes,
+    pendingAutoImports: Array.isArray(parsed?.pendingAutoImports)
+      ? [...new Set(parsed.pendingAutoImports.map(normalizeBarcode).filter(Boolean))]
+      : defaults.pendingAutoImports,
+    seededAt: parsed?.seededAt || null,
+    lastSeenAt: parsed?.lastSeenAt || null
+  };
+}
+
+function persistSpreadsheetState(){
+  writeJsonFile(SPREADSHEET_STATE_FILE, spreadsheetState);
+}
+
 function getManualOverrideRecord(barcode){
   const candidates = getBarcodeCandidates(barcode);
   for (const candidate of candidates){
@@ -629,6 +665,125 @@ function recordMissingSpreadsheetMatch(entry = {}){
     .sort((a, b) => String(b.lastSeenAt || "").localeCompare(String(a.lastSeenAt || "")))
     .slice(0, MISSING_MATCH_LIMIT);
   persistMissingMatches();
+}
+
+function hasQueuedImportForBarcode(barcode){
+  const candidates = new Set(getBarcodeCandidates(barcode));
+  if (!candidates.size) return false;
+
+  return queue.some(job =>
+    getBarcodeCandidates(job?.barcode).some(candidate => candidates.has(candidate))
+  ) || candidates.has(normalizeBarcode(importStatus.currentBarcode));
+}
+
+function removePendingAutoImport(barcode){
+  const candidates = new Set(getBarcodeCandidates(barcode));
+  if (!candidates.size) return false;
+
+  const nextPending = spreadsheetState.pendingAutoImports.filter(
+    item => !candidates.has(normalizeBarcode(item))
+  );
+  const changed = nextPending.length !== spreadsheetState.pendingAutoImports.length;
+
+  if (changed){
+    spreadsheetState = {
+      ...spreadsheetState,
+      pendingAutoImports: nextPending
+    };
+    persistSpreadsheetState();
+  }
+
+  return changed;
+}
+
+function updateSpreadsheetState(nextDataMap){
+  const currentBarcodes = Object.keys(nextDataMap);
+  const now = new Date().toISOString();
+
+  if (!spreadsheetState.seededAt){
+    spreadsheetState = {
+      ...spreadsheetState,
+      knownBarcodes: currentBarcodes,
+      pendingAutoImports: spreadsheetState.pendingAutoImports.filter(barcode =>
+        currentBarcodes.includes(barcode)
+      ),
+      seededAt: now,
+      lastSeenAt: now
+    };
+    persistSpreadsheetState();
+    return {
+      seeded: true,
+      newBarcodes: []
+    };
+  }
+
+  const knownSet = new Set(spreadsheetState.knownBarcodes);
+  const newBarcodes = currentBarcodes.filter(barcode => !knownSet.has(barcode));
+  const pending = [
+    ...spreadsheetState.pendingAutoImports.filter(barcode => currentBarcodes.includes(barcode)),
+    ...newBarcodes
+  ];
+
+  spreadsheetState = {
+    ...spreadsheetState,
+    knownBarcodes: currentBarcodes,
+    pendingAutoImports: [...new Set(pending)],
+    lastSeenAt: now
+  };
+  persistSpreadsheetState();
+
+  return {
+    seeded: false,
+    newBarcodes
+  };
+}
+
+function queuePendingSpreadsheetImports(sourceMap = dataMap){
+  if (!AUTO_IMPORT_NEW_TITLES){
+    return {
+      queued: 0,
+      pending: spreadsheetState.pendingAutoImports.length
+    };
+  }
+
+  const jobsToQueue = [];
+
+  for (const barcode of spreadsheetState.pendingAutoImports){
+    if (jobsToQueue.length >= AUTO_IMPORT_MAX_PER_REFRESH){
+      break;
+    }
+
+    const match = sourceMap[barcode];
+    if (!match || Number(match.stock || 0) <= 0){
+      continue;
+    }
+
+    if (hasQueuedImportForBarcode(barcode)){
+      continue;
+    }
+
+    jobsToQueue.push({
+      barcode,
+      condition: "M",
+      source: "spreadsheet-auto-import",
+      overrides: null
+    });
+  }
+
+  if (jobsToQueue.length){
+    beginImportBatch(jobsToQueue.length);
+    queue.push(...jobsToQueue);
+    importStatus = {
+      ...importStatus,
+      queued: queue.length
+    };
+    console.log("🆕 AUTO-IMPORT QUEUED:", jobsToQueue.length, "new spreadsheet title(s)");
+  }
+
+  return {
+    queued: jobsToQueue.length,
+    pending: spreadsheetState.pendingAutoImports.length
+  };
 }
 
 function escapeHtml(val){
@@ -912,6 +1067,20 @@ function calculatePrice(cost){
   return price.toFixed(2);
 }
 
+function calculateMarketPrice(lowestPrice){
+  const marketFloor = Number.parseFloat(lowestPrice);
+  if (!Number.isFinite(marketFloor) || marketFloor <= 0){
+    return MIN_PRICE.toFixed(2);
+  }
+
+  let price = Math.ceil(marketFloor) - 0.01;
+  if (price < MIN_PRICE){
+    price = MIN_PRICE;
+  }
+
+  return price.toFixed(2);
+}
+
 // ----------------------------
 async function loadExcel(options = {}){
   const {
@@ -976,6 +1145,13 @@ async function loadExcel(options = {}){
 
     const loadedCount = Object.keys(dataMap).length;
     console.log("✅ Excel Loaded:", loadedCount);
+    const spreadsheetDelta = updateSpreadsheetState(nextDataMap);
+    if (spreadsheetDelta.seeded){
+      console.log("🧭 Spreadsheet baseline saved:", loadedCount, "known barcodes");
+    } else if (spreadsheetDelta.newBarcodes.length){
+      console.log("🆕 New spreadsheet barcodes detected:", spreadsheetDelta.newBarcodes.length);
+    }
+    const autoImport = queuePendingSpreadsheetImports(nextDataMap);
 
     const nextSignature = buildInventorySignature(nextDataMap);
     const changed = nextSignature !== lastInventorySignature;
@@ -998,6 +1174,8 @@ async function loadExcel(options = {}){
       source,
       rowsRead: rows.length,
       loadedCount,
+      spreadsheetDelta,
+      autoImport,
       changed,
       triggeredSync,
       forced: forceInventorySync
@@ -1025,6 +1203,7 @@ loadHistoryFromDisk();
 loadManualOverridesFromDisk();
 loadMissingMatchesFromDisk();
 loadMaintenanceJobsFromDisk();
+loadSpreadsheetStateFromDisk();
 
 // ----------------------------
 async function safeFetch(url){
@@ -1523,6 +1702,7 @@ async function fetchRelease(id, barcode){
   const resolvedBarcode = normalizeBarcode(barcode) || releaseBarcode;
   const match = findMatch(resolvedBarcode);
   const manualOverride = !match ? getManualOverrideRecord(resolvedBarcode) : null;
+  const marketPrice = calculateMarketPrice(r.lowest_price);
   const spreadsheetColor = String(match?.color || "").trim().toLowerCase();
   const discogsColor = detectColor(
     title,
@@ -1558,7 +1738,7 @@ async function fetchRelease(id, barcode){
     description,
     descriptionText,
     image: r.images?.[0]?.uri || "",
-    basePrice: calculatePrice(match?.cost),
+    basePrice: match ? calculatePrice(match?.cost) : marketPrice,
     stock: match?.stock ?? 0,
     year,
     country,
@@ -1576,7 +1756,11 @@ async function fetchRelease(id, barcode){
     sourceMeta: {
       spreadsheetMatched: Boolean(match),
       manualOverrideApplied: Boolean(manualOverride),
-      manualOverrideSavedAt: manualOverride?.savedAt || null
+      manualOverrideSavedAt: manualOverride?.savedAt || null,
+      priceSource: match ? "spreadsheet" : "discogs_market",
+      marketLowestPrice: Number.parseFloat(r.lowest_price) || null,
+      marketForSale: Number.parseInt(r.num_for_sale, 10) || 0,
+      marketBlocked: Boolean(r.blocked_from_sale)
     }
   };
 
@@ -1594,7 +1778,7 @@ async function fetchRelease(id, barcode){
     recordMissingSpreadsheetMatch({
       barcode: resolvedBarcode,
       title: finalItem.title,
-      reason: "Missing spreadsheet price and stock",
+      reason: "Missing spreadsheet data, using Discogs market pricing",
       manualOverrideSaved: Boolean(manualOverride?.fields)
     });
   }
@@ -2509,7 +2693,16 @@ async function processQueue(){
   try {
     job = queue.shift();
     markImportStarted(job);
-    const data = await fetchRelease(job.id, job.barcode);
+    let data = null;
+
+    if (job.preparedItem){
+      data = job.preparedItem;
+    } else if (job.id){
+      data = await fetchRelease(job.id, job.barcode);
+    } else if (job.barcode){
+      data = await findBestReleaseForBarcode(job.barcode);
+    }
+
     if (!data){
       finalizeImportItem({
         ok: false,
@@ -2527,6 +2720,9 @@ async function processQueue(){
 
     try {
       await upsertProduct(finalItem);
+      if (job.source === "spreadsheet-auto-import"){
+        removePendingAutoImport(finalItem.barcode || job.barcode);
+      }
       if (Object.keys(storedOverrideFields).length){
         saveManualOverrides(
           [job.barcode, data.barcode, finalItem.barcode],
@@ -2535,7 +2731,7 @@ async function processQueue(){
         recordMissingSpreadsheetMatch({
           barcode: finalItem.barcode,
           title: finalItem.title,
-          reason: "Missing spreadsheet price and stock",
+          reason: "Missing spreadsheet data, using Discogs market pricing",
           manualOverrideSaved: true
         });
       }
