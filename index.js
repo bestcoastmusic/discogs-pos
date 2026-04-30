@@ -18,6 +18,9 @@ let lastInventorySignature = "";
 let importStatus = createEmptyImportStatus();
 let titleBackfillStatus = createEmptyTitleBackfillStatus();
 let tagBackfillStatus = createEmptyTagBackfillStatus();
+let manualOverrides = {};
+let missingSpreadsheetMatches = [];
+let maintenanceJobs = createDefaultMaintenanceJobs();
 let lastInventorySync = {
   running: false,
   queued: false,
@@ -33,12 +36,20 @@ const LOCATION_ID = Number(process.env.SHOPIFY_LOCATION_ID || DEFAULT_LOCATION_I
 const LOCAL_PRICING_FILE = path.join(__dirname, "pricing.csv");
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, ".data");
 const HISTORY_FILE = process.env.HISTORY_FILE || path.join(DATA_DIR, "history.json");
+const MANUAL_OVERRIDES_FILE = process.env.MANUAL_OVERRIDES_FILE || path.join(DATA_DIR, "manual-overrides.json");
+const MISSING_MATCHES_FILE = process.env.MISSING_MATCHES_FILE || path.join(DATA_DIR, "missing-matches.json");
+const MAINTENANCE_JOBS_FILE = process.env.MAINTENANCE_JOBS_FILE || path.join(DATA_DIR, "maintenance-jobs.json");
 const HISTORY_LIMIT = 60;
+const MISSING_MATCH_LIMIT = 120;
 const EXCEL_REFRESH_INTERVAL_MS = Math.max(
   0,
   Number(process.env.EXCEL_REFRESH_INTERVAL_MS || 60000)
 );
 const SYNC_TRIGGER_SECRET = String(process.env.SYNC_TRIGGER_SECRET || "").trim();
+const MAINTENANCE_CHUNK_SIZE = Math.max(
+  5,
+  Number(process.env.MAINTENANCE_CHUNK_SIZE || 25)
+);
 const COLLECTION_TAG_ALLOWLIST = new Set(
   String(process.env.SHOPIFY_COLLECTION_TAGS || "")
     .split(/[,\n]/)
@@ -289,6 +300,34 @@ function createEmptyTagBackfillStatus(){
   };
 }
 
+function createEmptyMaintenanceJob(label){
+  return {
+    label,
+    running: false,
+    startedAt: null,
+    lastRunAt: null,
+    finishedAt: null,
+    total: 0,
+    processed: 0,
+    matched: 0,
+    updated: 0,
+    unchanged: 0,
+    failed: 0,
+    currentTitle: null,
+    currentBarcode: null,
+    lastProductId: null,
+    complete: false,
+    error: null
+  };
+}
+
+function createDefaultMaintenanceJobs(){
+  return {
+    titles: createEmptyMaintenanceJob("Title Backfill"),
+    tags: createEmptyMaintenanceJob("Collection Cleanup")
+  };
+}
+
 function getTitleBackfillStatusSnapshot(){
   return {
     ...titleBackfillStatus,
@@ -306,6 +345,26 @@ function getTagBackfillStatusSnapshot(){
     percent: tagBackfillStatus.total
       ? Math.round((tagBackfillStatus.scanned / tagBackfillStatus.total) * 100)
       : 0
+  };
+}
+
+function getMaintenanceJobSnapshot(job){
+  const processed = Number(job?.processed || 0);
+  const total = Number(job?.total || 0);
+  const remaining = Math.max(0, total - processed);
+
+  return {
+    ...job,
+    processed,
+    remaining,
+    percent: total ? Math.round((processed / total) * 100) : 0
+  };
+}
+
+function getMaintenanceStatusSnapshot(){
+  return {
+    titles: getMaintenanceJobSnapshot(maintenanceJobs.titles),
+    tags: getMaintenanceJobSnapshot(maintenanceJobs.tags)
   };
 }
 
@@ -361,6 +420,215 @@ function pushHistoryEntry(item){
   });
   history = history.slice(-HISTORY_LIMIT);
   persistHistory();
+}
+
+function loadJsonFile(filePath, fallback){
+  try {
+    if (!fs.existsSync(filePath)){
+      return fallback;
+    }
+
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (err){
+    console.log("❌ JSON load failed:", path.basename(filePath), err.message);
+    return fallback;
+  }
+}
+
+function writeJsonFile(filePath, value){
+  try {
+    ensureDirForFile(filePath);
+    fs.writeFileSync(filePath, JSON.stringify(value, null, 2));
+  } catch (err){
+    console.log("❌ JSON save failed:", path.basename(filePath), err.message);
+  }
+}
+
+function loadManualOverridesFromDisk(){
+  const parsed = loadJsonFile(MANUAL_OVERRIDES_FILE, {});
+  manualOverrides = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed
+    : {};
+}
+
+function persistManualOverrides(){
+  writeJsonFile(MANUAL_OVERRIDES_FILE, manualOverrides);
+}
+
+function loadMissingMatchesFromDisk(){
+  const parsed = loadJsonFile(MISSING_MATCHES_FILE, []);
+  missingSpreadsheetMatches = Array.isArray(parsed)
+    ? parsed
+        .filter(item => item && typeof item === "object")
+        .slice(0, MISSING_MATCH_LIMIT)
+    : [];
+}
+
+function persistMissingMatches(){
+  writeJsonFile(MISSING_MATCHES_FILE, missingSpreadsheetMatches.slice(0, MISSING_MATCH_LIMIT));
+}
+
+function mergeMaintenanceJobState(source, fallback){
+  return {
+    ...fallback,
+    ...(source && typeof source === "object" && !Array.isArray(source) ? source : {})
+  };
+}
+
+function loadMaintenanceJobsFromDisk(){
+  const defaults = createDefaultMaintenanceJobs();
+  const parsed = loadJsonFile(MAINTENANCE_JOBS_FILE, {});
+
+  maintenanceJobs = {
+    titles: {
+      ...mergeMaintenanceJobState(parsed?.titles, defaults.titles),
+      running: false,
+      currentTitle: null,
+      currentBarcode: null
+    },
+    tags: {
+      ...mergeMaintenanceJobState(parsed?.tags, defaults.tags),
+      running: false,
+      currentTitle: null,
+      currentBarcode: null
+    }
+  };
+}
+
+function persistMaintenanceJobs(){
+  writeJsonFile(MAINTENANCE_JOBS_FILE, maintenanceJobs);
+}
+
+function getManualOverrideRecord(barcode){
+  const candidates = getBarcodeCandidates(barcode);
+  for (const candidate of candidates){
+    if (manualOverrides[candidate]){
+      return manualOverrides[candidate];
+    }
+  }
+
+  return null;
+}
+
+function normalizeStoredOverride(overrides = {}){
+  const next = {};
+
+  if (typeof overrides.title === "string" && overrides.title.trim()){
+    next.title = overrides.title.trim();
+  }
+
+  if (typeof overrides.barcode === "string"){
+    const clean = normalizeBarcode(overrides.barcode);
+    if (clean) next.barcode = clean;
+  }
+
+  const price = Number.parseFloat(overrides.basePrice);
+  if (Number.isFinite(price) && price > 0){
+    next.basePrice = price.toFixed(2);
+  }
+
+  const stock = Number.parseInt(overrides.stock, 10);
+  if (Number.isFinite(stock) && stock >= 0){
+    next.stock = stock;
+  }
+
+  if (typeof overrides.color === "string" && overrides.color.trim()){
+    next.color = chooseColor(overrides.color, "");
+  }
+
+  ["year", "country", "label", "format"].forEach(field => {
+    if (typeof overrides[field] === "string" && overrides[field].trim()){
+      next[field] = overrides[field].trim();
+    }
+  });
+
+  if (typeof overrides.genre === "string" && overrides.genre.trim()){
+    next.genre = simplifyGenre(overrides.genre);
+  }
+
+  if (typeof overrides.descriptionText === "string" && normalizeTextBlock(overrides.descriptionText)){
+    next.descriptionText = normalizeTextBlock(overrides.descriptionText);
+  }
+
+  return next;
+}
+
+function saveManualOverrides(barcodes, overrides = {}){
+  const normalizedOverrides = normalizeStoredOverride(overrides);
+  if (!Object.keys(normalizedOverrides).length){
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  const candidates = [...new Set(
+    (Array.isArray(barcodes) ? barcodes : [barcodes])
+      .flatMap(value => getBarcodeCandidates(value))
+      .filter(Boolean)
+  )];
+
+  if (!candidates.length){
+    return null;
+  }
+
+  for (const candidate of candidates){
+    const previous = manualOverrides[candidate];
+    manualOverrides[candidate] = {
+      barcode: candidate,
+      fields: {
+        ...(previous?.fields || {}),
+        ...normalizedOverrides
+      },
+      savedAt: now
+    };
+  }
+
+  persistManualOverrides();
+  return normalizedOverrides;
+}
+
+function removeMissingSpreadsheetMatch(barcode){
+  const candidates = new Set(getBarcodeCandidates(barcode));
+  if (!candidates.size) return false;
+
+  const next = missingSpreadsheetMatches.filter(item => !candidates.has(normalizeBarcode(item.barcode)));
+  const changed = next.length !== missingSpreadsheetMatches.length;
+  if (changed){
+    missingSpreadsheetMatches = next;
+    persistMissingMatches();
+  }
+
+  return changed;
+}
+
+function recordMissingSpreadsheetMatch(entry = {}){
+  const barcode = normalizeBarcode(entry.barcode);
+  if (!barcode) return;
+
+  const now = new Date().toISOString();
+  const index = missingSpreadsheetMatches.findIndex(item => normalizeBarcode(item.barcode) === barcode);
+  const nextItem = {
+    barcode,
+    title: String(entry.title || "").trim() || "Untitled release",
+    reason: String(entry.reason || "Spreadsheet match missing").trim(),
+    seenCount: (index >= 0 ? Number(missingSpreadsheetMatches[index].seenCount || 0) : 0) + 1,
+    firstSeenAt: index >= 0 ? missingSpreadsheetMatches[index].firstSeenAt || now : now,
+    lastSeenAt: now,
+    manualOverrideSaved: Boolean(entry.manualOverrideSaved)
+  };
+
+  if (index >= 0){
+    missingSpreadsheetMatches[index] = {
+      ...missingSpreadsheetMatches[index],
+      ...nextItem
+    };
+  } else {
+    missingSpreadsheetMatches.unshift(nextItem);
+  }
+
+  missingSpreadsheetMatches = missingSpreadsheetMatches
+    .sort((a, b) => String(b.lastSeenAt || "").localeCompare(String(a.lastSeenAt || "")))
+    .slice(0, MISSING_MATCH_LIMIT);
+  persistMissingMatches();
 }
 
 function escapeHtml(val){
@@ -589,8 +857,9 @@ function applyItemOverrides(item, overrides = {}){
   }
 
   const next = { ...item };
+  const hasExplicitTitle = typeof overrides.title === "string" && overrides.title.trim();
 
-  if (typeof overrides.title === "string"){
+  if (hasExplicitTitle){
     next.title = overrides.title.trim() || next.title;
   }
 
@@ -609,14 +878,21 @@ function applyItemOverrides(item, overrides = {}){
     next.stock = stock;
   }
 
-  ["year", "country", "label", "format", "genre"].forEach(field => {
+  ["year", "country", "label", "format"].forEach(field => {
     if (typeof overrides[field] === "string"){
       next[field] = overrides[field].trim();
     }
   });
 
+  if (typeof overrides.genre === "string"){
+    next.genre = simplifyGenre(overrides.genre);
+  }
+
   if (typeof overrides.color === "string"){
     next.color = chooseColor(overrides.color, next.color);
+    if (!hasExplicitTitle && next.artistName && next.releaseName){
+      next.title = buildShopifyReleaseTitle(next.artistName, next.releaseName, next.color);
+    }
   }
 
   if (typeof overrides.descriptionText === "string"){
@@ -640,7 +916,8 @@ function calculatePrice(cost){
 async function loadExcel(options = {}){
   const {
     syncReason = "spreadsheet refresh",
-    forceInventorySync = false
+    forceInventorySync = false,
+    skipInventorySync = false
   } = options;
 
   console.log("🔄 Loading Excel...");
@@ -707,9 +984,11 @@ async function loadExcel(options = {}){
     }
 
     let triggeredSync = false;
-    if (forceInventorySync || changed){
+    if (!skipInventorySync && (forceInventorySync || changed)){
       queueInventorySync(syncReason);
       triggeredSync = true;
+    } else if (skipInventorySync){
+      console.log("⏭️ Inventory sync skipped: refresh requested without sync");
     } else {
       console.log("⏭️ Inventory sync skipped: spreadsheet stock unchanged");
     }
@@ -743,6 +1022,9 @@ if (EXCEL_REFRESH_INTERVAL_MS > 0){
   console.log("⏸️ Spreadsheet polling disabled");
 }
 loadHistoryFromDisk();
+loadManualOverridesFromDisk();
+loadMissingMatchesFromDisk();
+loadMaintenanceJobsFromDisk();
 
 // ----------------------------
 async function safeFetch(url){
@@ -1240,6 +1522,7 @@ async function fetchRelease(id, barcode){
   );
   const resolvedBarcode = normalizeBarcode(barcode) || releaseBarcode;
   const match = findMatch(resolvedBarcode);
+  const manualOverride = !match ? getManualOverrideRecord(resolvedBarcode) : null;
   const spreadsheetColor = String(match?.color || "").trim().toLowerCase();
   const discogsColor = detectColor(
     title,
@@ -1266,13 +1549,11 @@ async function fetchRelease(id, barcode){
     notes: r.notes
   });
 
-  if (!match){
-    console.log("⚠️ NO EXCEL MATCH:", resolvedBarcode);
-  }
-
-  return {
+  const baseItem = {
     id,
     barcode: resolvedBarcode,
+    artistName: artist,
+    releaseName: title,
     title: buildShopifyReleaseTitle(artist, title, finalColor),
     description,
     descriptionText,
@@ -1291,8 +1572,34 @@ async function fetchRelease(id, barcode){
       barcodeMismatch: false,
       similarOptions: false
     },
-    reviewReasons: []
+    reviewReasons: [],
+    sourceMeta: {
+      spreadsheetMatched: Boolean(match),
+      manualOverrideApplied: Boolean(manualOverride),
+      manualOverrideSavedAt: manualOverride?.savedAt || null
+    }
   };
+
+  if (match){
+    removeMissingSpreadsheetMatch(resolvedBarcode);
+  } else {
+    console.log("⚠️ NO EXCEL MATCH:", resolvedBarcode);
+  }
+
+  const finalItem = manualOverride?.fields
+    ? applyItemOverrides(baseItem, manualOverride.fields)
+    : baseItem;
+
+  if (!match){
+    recordMissingSpreadsheetMatch({
+      barcode: resolvedBarcode,
+      title: finalItem.title,
+      reason: "Missing spreadsheet price and stock",
+      manualOverrideSaved: Boolean(manualOverride?.fields)
+    });
+  }
+
+  return finalItem;
 }
 
 async function findBestReleaseForBarcode(barcode, maxResults = 3){
@@ -1419,6 +1726,228 @@ async function updateShopifyProductTagsAndType(productId, { tags, productType })
   }
 
   return res.data.product;
+}
+
+function resetMaintenanceJob(jobKey){
+  const labels = {
+    titles: "Title Backfill",
+    tags: "Collection Cleanup"
+  };
+  maintenanceJobs[jobKey] = createEmptyMaintenanceJob(labels[jobKey] || "Maintenance");
+  persistMaintenanceJobs();
+  return getMaintenanceJobSnapshot(maintenanceJobs[jobKey]);
+}
+
+async function buildMaintenanceProductList(){
+  const variants = await fetchAllShopifyVariants();
+  const seenProductIds = new Set();
+  const uniqueProducts = [];
+
+  for (const variant of variants){
+    const productId = Number(variant.product_id || 0);
+    if (!productId || seenProductIds.has(productId)){
+      continue;
+    }
+
+    seenProductIds.add(productId);
+    uniqueProducts.push({
+      productId,
+      barcode: getVariantBarcode(variant)
+    });
+  }
+
+  return uniqueProducts.sort((a, b) => a.productId - b.productId);
+}
+
+function updateMaintenanceJob(jobKey, changes){
+  maintenanceJobs[jobKey] = {
+    ...maintenanceJobs[jobKey],
+    ...changes
+  };
+  persistMaintenanceJobs();
+}
+
+async function processTitleMaintenanceItem(jobKey, item){
+  const bestRelease = await findBestReleaseForBarcode(item.barcode);
+  if (!bestRelease){
+    updateMaintenanceJob(jobKey, {
+      failed: maintenanceJobs[jobKey].failed + 1
+    });
+    return;
+  }
+
+  updateMaintenanceJob(jobKey, {
+    matched: maintenanceJobs[jobKey].matched + 1,
+    currentTitle: bestRelease.title
+  });
+
+  const currentTitle = await fetchShopifyProductTitle(item.productId);
+  if (String(currentTitle || "").trim() === String(bestRelease.title || "").trim()){
+    updateMaintenanceJob(jobKey, {
+      unchanged: maintenanceJobs[jobKey].unchanged + 1
+    });
+    return;
+  }
+
+  await updateShopifyProductTitle(item.productId, bestRelease.title);
+  updateMaintenanceJob(jobKey, {
+    updated: maintenanceJobs[jobKey].updated + 1
+  });
+
+  console.log("✅ TITLE MAINTENANCE:", item.barcode, "->", bestRelease.title);
+}
+
+async function processTagMaintenanceItem(jobKey, item){
+  const currentProduct = await fetchShopifyProductMetadata(item.productId);
+  updateMaintenanceJob(jobKey, {
+    currentTitle: currentProduct.title || null
+  });
+
+  const spreadsheetMatch = item.barcode ? findMatch(item.barcode) : null;
+  const desiredGenre = resolveCollectionTag(
+    spreadsheetMatch?.genre || currentProduct.product_type || ""
+  ) || "Other";
+  const desiredTags = buildShopifyTags({ genre: desiredGenre });
+
+  updateMaintenanceJob(jobKey, {
+    matched: maintenanceJobs[jobKey].matched + 1
+  });
+
+  const currentTags = String(currentProduct.tags || "")
+    .split(",")
+    .map(tag => tag.trim())
+    .filter(Boolean)
+    .join(", ");
+  const currentProductType = String(currentProduct.product_type || "").trim();
+
+  if (currentTags === desiredTags && currentProductType === desiredGenre){
+    updateMaintenanceJob(jobKey, {
+      unchanged: maintenanceJobs[jobKey].unchanged + 1
+    });
+    return;
+  }
+
+  await updateShopifyProductTagsAndType(item.productId, {
+    tags: desiredTags,
+    productType: desiredGenre
+  });
+
+  updateMaintenanceJob(jobKey, {
+    updated: maintenanceJobs[jobKey].updated + 1
+  });
+
+  console.log(
+    "✅ TAG MAINTENANCE:",
+    item.barcode || `product:${item.productId}`,
+    "->",
+    desiredTags
+  );
+}
+
+async function runMaintenanceChunk(jobKey){
+  const currentJob = maintenanceJobs[jobKey];
+  if (!currentJob){
+    throw new Error("Unknown maintenance job");
+  }
+
+  if (currentJob.running){
+    return getMaintenanceJobSnapshot(currentJob);
+  }
+
+  updateMaintenanceJob(jobKey, {
+    running: true,
+    startedAt: currentJob.startedAt || new Date().toISOString(),
+    lastRunAt: new Date().toISOString(),
+    finishedAt: null,
+    complete: false,
+    currentTitle: null,
+    currentBarcode: null,
+    error: null
+  });
+
+  try {
+    if (jobKey === "tags"){
+      const refresh = await loadExcel({
+        syncReason: "maintenance tag refresh",
+        forceInventorySync: false,
+        skipInventorySync: true
+      });
+
+      if (!refresh?.ok){
+        throw new Error(refresh?.error || "Spreadsheet refresh failed before collection cleanup");
+      }
+    }
+
+    const products = await buildMaintenanceProductList();
+    const lastProductId = Number(maintenanceJobs[jobKey].lastProductId || 0);
+    const startIndex = lastProductId
+      ? products.findIndex(item => item.productId > lastProductId)
+      : 0;
+    const normalizedStartIndex = startIndex === -1 ? products.length : startIndex;
+    const chunk = products.slice(normalizedStartIndex, normalizedStartIndex + MAINTENANCE_CHUNK_SIZE);
+
+    updateMaintenanceJob(jobKey, {
+      total: products.length
+    });
+
+    if (!chunk.length){
+      updateMaintenanceJob(jobKey, {
+        running: false,
+        complete: true,
+        finishedAt: new Date().toISOString(),
+        currentTitle: null,
+        currentBarcode: null
+      });
+      return getMaintenanceJobSnapshot(maintenanceJobs[jobKey]);
+    }
+
+    for (const item of chunk){
+      updateMaintenanceJob(jobKey, {
+        currentBarcode: item.barcode || null,
+        currentTitle: null
+      });
+
+      try {
+        if (jobKey === "titles"){
+          await processTitleMaintenanceItem(jobKey, item);
+        } else if (jobKey === "tags"){
+          await processTagMaintenanceItem(jobKey, item);
+        }
+      } catch (err){
+        updateMaintenanceJob(jobKey, {
+          failed: maintenanceJobs[jobKey].failed + 1,
+          error: err.message
+        });
+        console.log(`❌ ${jobKey.toUpperCase()} MAINTENANCE ERROR:`, item.barcode || item.productId, err.message);
+      }
+
+      updateMaintenanceJob(jobKey, {
+        processed: maintenanceJobs[jobKey].processed + 1,
+        lastProductId: item.productId
+      });
+
+      await sleep(SHOPIFY_REQUEST_DELAY_MS);
+    }
+
+    const completed = maintenanceJobs[jobKey].processed >= products.length;
+    updateMaintenanceJob(jobKey, {
+      running: false,
+      complete: completed,
+      finishedAt: completed ? new Date().toISOString() : null,
+      currentTitle: null,
+      currentBarcode: null
+    });
+  } catch (err){
+    updateMaintenanceJob(jobKey, {
+      running: false,
+      currentTitle: null,
+      currentBarcode: null,
+      error: err.message
+    });
+    console.log(`❌ ${jobKey.toUpperCase()} MAINTENANCE FAILED:`, err.message);
+  }
+
+  return getMaintenanceJobSnapshot(maintenanceJobs[jobKey]);
 }
 
 async function runTitleBackfill(){
@@ -1954,35 +2483,19 @@ async function handleScheduledSync(req, res){
 app.get("/scheduled-sync", handleScheduledSync);
 app.post("/scheduled-sync", handleScheduledSync);
 
-app.post("/backfill-titles",(req,res)=>{
-  if (titleBackfillStatus.running){
-    return res.json({
-      success: true,
-      alreadyRunning: true,
-      backfill: getTitleBackfillStatusSnapshot()
-    });
-  }
-
-  void runTitleBackfill();
+app.post("/backfill-titles", async (req,res)=>{
+  const backfill = await runMaintenanceChunk("titles");
   res.json({
     success: true,
-    backfill: getTitleBackfillStatusSnapshot()
+    backfill
   });
 });
 
-app.post("/backfill-tags",(req,res)=>{
-  if (tagBackfillStatus.running){
-    return res.json({
-      success: true,
-      alreadyRunning: true,
-      backfill: getTagBackfillStatusSnapshot()
-    });
-  }
-
-  void runTagBackfill();
+app.post("/backfill-tags", async (req,res)=>{
+  const backfill = await runMaintenanceChunk("tags");
   res.json({
     success: true,
-    backfill: getTagBackfillStatusSnapshot()
+    backfill
   });
 });
 
@@ -2006,11 +2519,26 @@ async function processQueue(){
     }
 
     const finalItem = applyItemOverrides(data, job.overrides);
+    const storedOverrideFields = !data.sourceMeta?.spreadsheetMatched
+      ? normalizeStoredOverride(job.overrides || {})
+      : {};
     finalItem.condition = job.condition || "M";
     markImportPrepared(finalItem, job);
 
     try {
       await upsertProduct(finalItem);
+      if (Object.keys(storedOverrideFields).length){
+        saveManualOverrides(
+          [job.barcode, data.barcode, finalItem.barcode],
+          storedOverrideFields
+        );
+        recordMissingSpreadsheetMatch({
+          barcode: finalItem.barcode,
+          title: finalItem.title,
+          reason: "Missing spreadsheet price and stock",
+          manualOverrideSaved: true
+        });
+      }
       pushHistoryEntry(finalItem);
       finalizeImportItem({ ok: true });
     } catch (err){
@@ -2040,6 +2568,28 @@ app.get("/history",(req,res)=>{
   res.json({ history });
 });
 
+app.get("/missing-matches",(req,res)=>{
+  res.json({
+    matches: missingSpreadsheetMatches
+  });
+});
+
+app.post("/missing-matches/clear",(req,res)=>{
+  const barcode = normalizeBarcode(req.body?.barcode);
+
+  if (barcode){
+    removeMissingSpreadsheetMatch(barcode);
+  } else {
+    missingSpreadsheetMatches = [];
+    persistMissingMatches();
+  }
+
+  res.json({
+    success: true,
+    matches: missingSpreadsheetMatches
+  });
+});
+
 app.get("/sync-status",(req,res)=>{
   res.json({
     sync: {
@@ -2056,15 +2606,53 @@ app.get("/import-status",(req,res)=>{
   });
 });
 
+app.get("/maintenance-status",(req,res)=>{
+  res.json({
+    maintenance: getMaintenanceStatusSnapshot()
+  });
+});
+
+app.post("/maintenance/:jobKey/run", async (req,res)=>{
+  const jobKey = String(req.params.jobKey || "");
+  if (!maintenanceJobs[jobKey]){
+    return res.status(404).json({
+      success: false,
+      error: "Unknown maintenance job"
+    });
+  }
+
+  const job = await runMaintenanceChunk(jobKey);
+  res.json({
+    success: true,
+    job
+  });
+});
+
+app.post("/maintenance/:jobKey/reset",(req,res)=>{
+  const jobKey = String(req.params.jobKey || "");
+  if (!maintenanceJobs[jobKey]){
+    return res.status(404).json({
+      success: false,
+      error: "Unknown maintenance job"
+    });
+  }
+
+  const job = resetMaintenanceJob(jobKey);
+  res.json({
+    success: true,
+    job
+  });
+});
+
 app.get("/backfill-status",(req,res)=>{
   res.json({
-    backfill: getTitleBackfillStatusSnapshot()
+    backfill: getMaintenanceJobSnapshot(maintenanceJobs.titles)
   });
 });
 
 app.get("/backfill-tags-status",(req,res)=>{
   res.json({
-    backfill: getTagBackfillStatusSnapshot()
+    backfill: getMaintenanceJobSnapshot(maintenanceJobs.tags)
   });
 });
 

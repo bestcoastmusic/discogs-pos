@@ -22,9 +22,13 @@ window.onload = function(){
   loadHistory();
   loadSyncStatus();
   loadImportStatus();
+  loadMissingMatches();
+  loadMaintenanceStatus();
   setInterval(loadHistory, 2000);
   setInterval(loadSyncStatus, 5000);
   setInterval(loadImportStatus, 1500);
+  setInterval(loadMissingMatches, 5000);
+  setInterval(loadMaintenanceStatus, 5000);
 };
 
 function formatMoney(value){
@@ -202,6 +206,45 @@ function getBulkReviewState(entry){
   };
 }
 
+function buildEditedOverrides(entry){
+  const overrides = {};
+
+  Object.entries(entry.edits || {}).forEach(([key, rawValue]) => {
+    if (rawValue === undefined || rawValue === null){
+      return;
+    }
+
+    if (key === "barcode"){
+      const clean = normalizeBarcode(rawValue);
+      if (clean) overrides.barcode = clean;
+      return;
+    }
+
+    if (key === "basePrice"){
+      const price = Number.parseFloat(rawValue);
+      if (Number.isFinite(price) && price > 0){
+        overrides.basePrice = price.toFixed(2);
+      }
+      return;
+    }
+
+    if (key === "stock"){
+      const stock = Number.parseInt(rawValue, 10);
+      if (Number.isFinite(stock) && stock >= 0){
+        overrides.stock = stock;
+      }
+      return;
+    }
+
+    const text = String(rawValue || "").trim();
+    if (text){
+      overrides[key] = text;
+    }
+  });
+
+  return overrides;
+}
+
 function buildBulkImportItem(entry){
   if (entry.removed) return null;
 
@@ -209,23 +252,14 @@ function buildBulkImportItem(entry){
   const preview = getBulkPreview(entry);
   if (!current || !preview) return null;
 
+  const overrides = buildEditedOverrides(entry);
+
   return {
     id: current.id,
     condition: entry.condition || "M",
     barcode: preview.barcode || current.barcode,
-    overrides: {
-      title: preview.title,
-      barcode: preview.barcode || current.barcode,
-      basePrice: preview.basePrice,
-      stock: preview.stock,
-      color: preview.color,
-      genre: preview.genre,
-      year: preview.year,
-      country: preview.country,
-      label: preview.label,
-      format: preview.format,
-      descriptionText: preview.descriptionText
-    }
+    previewStock: preview.stock,
+    overrides
   };
 }
 
@@ -338,6 +372,251 @@ function renderImportStatus(importState = {}){
       </div>
     </div>
   `;
+}
+
+function renderMissingMatches(matches = []){
+  const box = document.getElementById("missingMatches");
+  if (!box) return;
+
+  box.innerHTML = "";
+
+  if (!matches.length){
+    renderEmptyState(
+      box,
+      "No review items",
+      "Anything missing from the spreadsheet will show up here so you can revisit it later."
+    );
+    return;
+  }
+
+  const summary = document.createElement("div");
+  summary.className = "status-card";
+  summary.innerHTML = `
+    <div class="status-badges">
+      <span class="status-pill warn">${matches.length} waiting</span>
+      <span class="status-pill">Spreadsheet review queue</span>
+    </div>
+  `;
+
+  const clearAllBtn = document.createElement("button");
+  clearAllBtn.className = "ghost-btn";
+  clearAllBtn.textContent = "Clear All";
+  clearAllBtn.onclick = async () => {
+    await clearMissingMatches();
+  };
+
+  const actions = document.createElement("div");
+  actions.className = "result-actions-inline";
+  actions.style.marginTop = "12px";
+  actions.appendChild(clearAllBtn);
+  summary.appendChild(actions);
+  box.appendChild(summary);
+
+  matches.slice(0, 8).forEach(item => {
+    const card = document.createElement("article");
+    card.className = "history-item";
+
+    const heading = document.createElement("h3");
+    heading.className = "history-title";
+    heading.textContent = item.title || "Untitled release";
+
+    const meta = document.createElement("p");
+    meta.className = "history-meta";
+    meta.textContent = [
+      item.barcode ? `UPC ${item.barcode}` : null,
+      item.reason || "Spreadsheet match missing",
+      item.lastSeenAt ? formatTimestamp(item.lastSeenAt) : null
+    ].filter(Boolean).join(" • ");
+
+    const chips = document.createElement("div");
+    chips.className = "status-badges";
+    chips.style.marginTop = "10px";
+
+    const seenChip = document.createElement("span");
+    seenChip.className = "status-pill";
+    seenChip.textContent = `${item.seenCount || 1} lookups`;
+    chips.appendChild(seenChip);
+
+    if (item.manualOverrideSaved){
+      const savedChip = document.createElement("span");
+      savedChip.className = "status-pill good";
+      savedChip.textContent = "Manual override saved";
+      chips.appendChild(savedChip);
+    }
+
+    const clearBtn = document.createElement("button");
+    clearBtn.className = "ghost-btn";
+    clearBtn.textContent = "Clear";
+    clearBtn.onclick = async () => {
+      await clearMissingMatches(item.barcode);
+    };
+
+    const actionRow = document.createElement("div");
+    actionRow.className = "result-actions-inline";
+    actionRow.style.marginTop = "12px";
+    actionRow.appendChild(clearBtn);
+
+    card.appendChild(heading);
+    card.appendChild(meta);
+    card.appendChild(chips);
+    card.appendChild(actionRow);
+    box.appendChild(card);
+  });
+}
+
+function renderMaintenanceStatus(maintenance = {}){
+  const box = document.getElementById("maintenanceStatus");
+  if (!box) return;
+
+  const jobDefs = [
+    {
+      key: "titles",
+      label: "Title Backfill",
+      description: "Runs the next saved batch of title cleanup without needing a long all-at-once backfill."
+    },
+    {
+      key: "tags",
+      label: "Collection Cleanup",
+      description: "Runs the next saved batch of tag and product-type cleanup."
+    }
+  ];
+
+  box.innerHTML = "";
+
+  jobDefs.forEach(def => {
+    const job = maintenance[def.key] || {};
+    const processed = Number(job.processed || 0);
+    const total = Number(job.total || 0);
+    const remaining = Number(job.remaining ?? Math.max(0, total - processed));
+    const percent = Number(job.percent ?? (total ? Math.round((processed / total) * 100) : 0));
+    const stateLabel = job.running
+      ? "Running"
+      : job.complete
+        ? "Complete"
+        : processed
+          ? "Ready To Resume"
+          : "Waiting";
+    const stateTone = job.running
+      ? "warn"
+      : job.complete
+        ? "good"
+        : "pending";
+
+    const card = document.createElement("div");
+    card.className = "status-card";
+    card.innerHTML = `
+      <div class="status-badges">
+        <span class="status-pill ${stateTone === "good" ? "good" : stateTone === "warn" ? "warn" : ""}">${stateLabel}</span>
+        <span class="status-pill">${processed} done</span>
+        <span class="status-pill">${remaining} left</span>
+      </div>
+      <div class="status-stack" style="margin-top:14px;">
+        <div>
+          <div class="status-label">${def.label}</div>
+          <p class="section-copy" style="margin-top:6px;">${def.description}</p>
+        </div>
+        <div class="progress-shell">
+          <div class="progress-bar" style="width:${Math.max(0, Math.min(100, percent))}%;"></div>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Progress</span>
+          <span class="status-value">${processed} of ${total || 0}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Updated</span>
+          <span class="status-value">${job.updated || 0}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Unchanged</span>
+          <span class="status-value">${job.unchanged || 0}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Failed</span>
+          <span class="status-value">${job.failed || 0}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Current Item</span>
+          <span class="status-value">${job.currentTitle || job.currentBarcode || "Waiting on next batch"}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Last Run</span>
+          <span class="status-value">${formatTimestamp(job.lastRunAt)}</span>
+        </div>
+        ${job.error ? `<p class="muted-note">Last error: ${job.error}</p>` : ""}
+      </div>
+    `;
+
+    const actions = document.createElement("div");
+    actions.className = "result-actions-inline";
+    actions.style.marginTop = "14px";
+
+    const runBtn = document.createElement("button");
+    runBtn.className = "secondary-btn";
+    runBtn.textContent = job.running ? "Running..." : "Run Next Batch";
+    runBtn.disabled = Boolean(job.running);
+    runBtn.onclick = async () => {
+      await runMaintenanceJob(def.key);
+    };
+
+    const resetBtn = document.createElement("button");
+    resetBtn.className = "ghost-btn";
+    resetBtn.textContent = "Reset Progress";
+    resetBtn.disabled = Boolean(job.running);
+    resetBtn.onclick = async () => {
+      await resetMaintenanceJob(def.key);
+    };
+
+    actions.appendChild(runBtn);
+    actions.appendChild(resetBtn);
+    card.appendChild(actions);
+    box.appendChild(card);
+  });
+}
+
+async function clearMissingMatches(barcode){
+  await fetch("/missing-matches/clear", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(barcode ? { barcode } : {})
+  });
+
+  await loadMissingMatches();
+}
+
+async function loadMissingMatches(){
+  try {
+    const res = await fetch("/missing-matches");
+    const data = await res.json();
+    renderMissingMatches(data.matches || []);
+  } catch {
+    renderMissingMatches([]);
+  }
+}
+
+async function loadMaintenanceStatus(){
+  try {
+    const res = await fetch("/maintenance-status");
+    const data = await res.json();
+    renderMaintenanceStatus(data.maintenance || {});
+  } catch {
+    renderMaintenanceStatus({});
+  }
+}
+
+async function runMaintenanceJob(jobKey){
+  await fetch(`/maintenance/${jobKey}/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" }
+  });
+  await loadMaintenanceStatus();
+}
+
+async function resetMaintenanceJob(jobKey){
+  await fetch(`/maintenance/${jobKey}/reset`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" }
+  });
+  await loadMaintenanceStatus();
 }
 
 async function loadSyncStatus(){
@@ -497,7 +776,8 @@ async function pollBulk(jobId){
 async function addAllBulk(){
   const items = bulkItems
     .map(buildBulkImportItem)
-    .filter(item => item && Number(item.overrides.stock ?? 0) > 0);
+    .filter(item => item && Number(item.previewStock ?? 0) > 0)
+    .map(({ previewStock, ...item }) => item);
 
   if (!items.length){
     alert("No kept items in stock");
@@ -596,12 +876,16 @@ function renderCard(options, container){
   const copy = document.createElement("p");
   copy.className = "card-copy";
 
+  const importNote = document.createElement("div");
+  importNote.className = "info-note";
+
   const reviewNote = document.createElement("div");
   reviewNote.className = "review-note";
 
   body.appendChild(title);
   body.appendChild(meta);
   body.appendChild(chips);
+  body.appendChild(importNote);
   body.appendChild(copy);
   body.appendChild(reviewNote);
 
@@ -770,6 +1054,10 @@ function renderCard(options, container){
     actionChip.textContent = importState.label;
     stockChip.className = `chip chip-stock ${stock > 0 ? "in-stock" : "out-stock"}`;
     stockChip.textContent = stock > 0 ? `${stock} in stock` : "Out of stock";
+    importNote.style.display = importState.tone === "update" ? "block" : "none";
+    importNote.textContent = importState.tone === "update"
+      ? "Already in Shopify. Adding this scan will update the existing product instead of creating a duplicate."
+      : "";
 
     copy.textContent =
       current.descriptionText ||

@@ -385,6 +385,17 @@
       font-size: 0.95rem;
     }
 
+    .info-note {
+      display: none;
+      margin-top: 14px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: rgba(28, 143, 87, 0.08);
+      color: var(--accent-deep);
+      line-height: 1.5;
+      font-size: 0.92rem;
+    }
+
     .review-note {
       display: none;
       margin-top: 14px;
@@ -715,6 +726,32 @@
             </div>
 
             <div id="importStatus" class="status-stack"></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-inner">
+            <div class="section-head">
+              <div>
+                <h2>Missing Sheet Matches</h2>
+                <p class="section-copy">Anything that falls back to manual pricing or stock shows up here so you can revisit it later.</p>
+              </div>
+            </div>
+
+            <div id="missingMatches" class="history-list"></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-inner">
+            <div class="section-head">
+              <div>
+                <h2>Admin Tools</h2>
+                <p class="section-copy">Run cleanup work in saved chunks instead of fragile full-size backfills.</p>
+              </div>
+            </div>
+
+            <div id="maintenanceStatus" class="status-stack"></div>
           </div>
         </section>
 
