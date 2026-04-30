@@ -515,8 +515,32 @@ async function addAllBulk(){
 }
 
 function renderCard(options, container){
+  const entry = {
+    options,
+    selectedId: options[0]?.id || "",
+    condition: "NM",
+    editorOpen: false,
+    edits: {}
+  };
   const card = document.createElement("article");
   card.className = "result-card";
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "bulk-toolbar";
+
+  const sourceChip = document.createElement("span");
+  sourceChip.className = "chip chip-barcode";
+  sourceChip.textContent = "Single Scan";
+
+  const toolbarActions = document.createElement("div");
+  toolbarActions.className = "result-actions-inline";
+
+  const editBtn = document.createElement("button");
+  editBtn.className = "ghost-btn";
+
+  toolbarActions.appendChild(editBtn);
+  toolbar.appendChild(sourceChip);
+  toolbar.appendChild(toolbarActions);
 
   const preview = document.createElement("div");
   preview.className = "result-preview";
@@ -634,16 +658,104 @@ function renderCard(options, container){
   controls.appendChild(conditionField);
   controls.appendChild(addBtn);
 
+  const editor = document.createElement("div");
+  editor.className = "bulk-editor";
+
+  const editorNote = document.createElement("p");
+  editorNote.className = "muted-note";
+  editorNote.textContent = "Adjust any details below before adding this record to Shopify.";
+
+  const editorGrid = document.createElement("div");
+  editorGrid.className = "editor-grid";
+
+  function createEditorField(labelText, key, { type = "text", rows = 3, wide = false } = {}){
+    const field = document.createElement("div");
+    field.className = `field-stack${wide ? " editor-wide" : ""}`;
+
+    const label = document.createElement("label");
+    label.className = "field-label";
+    label.textContent = labelText;
+
+    const input = type === "textarea"
+      ? document.createElement("textarea")
+      : document.createElement("input");
+
+    input.className = "control-input";
+
+    if (type === "textarea"){
+      input.rows = rows;
+    } else {
+      input.type = type;
+    }
+
+    input.addEventListener("input", () => {
+      entry.edits[key] = input.value;
+      updateCard();
+    });
+
+    field.appendChild(label);
+    field.appendChild(input);
+    editorGrid.appendChild(field);
+    return input;
+  }
+
+  const inputRefs = {
+    title: createEditorField("Title", "title"),
+    barcode: createEditorField("Barcode", "barcode"),
+    basePrice: createEditorField("Price", "basePrice", { type: "number" }),
+    stock: createEditorField("Stock", "stock", { type: "number" }),
+    color: createEditorField("Color", "color"),
+    genre: createEditorField("Genre", "genre"),
+    year: createEditorField("Year", "year"),
+    country: createEditorField("Country", "country"),
+    label: createEditorField("Label", "label"),
+    format: createEditorField("Format", "format"),
+    descriptionText: createEditorField("Description", "descriptionText", { type: "textarea", rows: 5, wide: true })
+  };
+
+  const editorActions = document.createElement("div");
+  editorActions.className = "result-actions-inline";
+
+  const resetBtn = document.createElement("button");
+  resetBtn.className = "ghost-btn";
+  resetBtn.textContent = "Reset Edits";
+
+  editorActions.appendChild(resetBtn);
+  editor.appendChild(editorNote);
+  editor.appendChild(editorGrid);
+  editor.appendChild(editorActions);
+
+  card.appendChild(toolbar);
   card.appendChild(preview);
   card.appendChild(controls);
+  card.appendChild(editor);
 
-  function getCurrentOption(){
-    return options.find(option => String(option.id) === String(select.value)) || options[0];
+  function syncEditorInputs(){
+    const current = getBulkCurrentOption(entry);
+    if (!current) return;
+
+    inputRefs.title.value = entry.edits.title !== undefined ? entry.edits.title : (current.title || "");
+    inputRefs.barcode.value = entry.edits.barcode !== undefined ? entry.edits.barcode : (current.barcode || "");
+    inputRefs.basePrice.value = entry.edits.basePrice !== undefined ? entry.edits.basePrice : formatMoney(current.basePrice);
+    inputRefs.stock.value = entry.edits.stock !== undefined ? entry.edits.stock : String(current.stock ?? 0);
+    inputRefs.color.value = entry.edits.color !== undefined ? entry.edits.color : (current.color || "");
+    inputRefs.genre.value = entry.edits.genre !== undefined ? entry.edits.genre : (current.genre || "");
+    inputRefs.year.value = entry.edits.year !== undefined ? entry.edits.year : (current.year || "");
+    inputRefs.country.value = entry.edits.country !== undefined ? entry.edits.country : (current.country || "");
+    inputRefs.label.value = entry.edits.label !== undefined ? entry.edits.label : (current.label || "");
+    inputRefs.format.value = entry.edits.format !== undefined ? entry.edits.format : (current.format || "");
+    inputRefs.descriptionText.value = entry.edits.descriptionText !== undefined
+      ? entry.edits.descriptionText
+      : (current.descriptionText || "");
   }
 
   function updateCard(){
-    const current = getCurrentOption();
+    const current = getBulkPreview(entry);
+    if (!current) return;
+
     const stock = Number(current.stock || 0);
+    const importState = getBulkImportState(entry);
+    const reviewState = getBulkReviewState(entry);
 
     title.textContent = current.title || "Untitled release";
     meta.textContent =
@@ -654,12 +766,22 @@ function renderCard(options, container){
     priceChip.textContent = `$${formatMoney(current.basePrice)}`;
     barcodeChip.textContent = current.barcode ? `UPC ${current.barcode}` : "No barcode";
     colorChip.textContent = `${titleCase(current.color || "black")} vinyl`;
+    actionChip.className = `chip chip-action-${importState.tone}`;
+    actionChip.textContent = importState.label;
     stockChip.className = `chip chip-stock ${stock > 0 ? "in-stock" : "out-stock"}`;
     stockChip.textContent = stock > 0 ? `${stock} in stock` : "Out of stock";
 
     copy.textContent =
       current.descriptionText ||
       "No additional Discogs description was available for this release.";
+
+    card.classList.toggle("needs-review", reviewState.needsReview);
+    reviewChip.style.display = reviewState.needsReview ? "inline-flex" : "none";
+    reviewChip.textContent = "Needs Review";
+    reviewNote.style.display = reviewState.needsReview ? "block" : "none";
+    reviewNote.innerHTML = reviewState.needsReview
+      ? `<strong>Review before import:</strong> ${reviewState.reasons.join(" ")}`
+      : "";
 
     if (current.image){
       coverImage.src = current.image;
@@ -671,31 +793,54 @@ function renderCard(options, container){
       coverFallback.style.display = "inline";
     }
 
+    editBtn.textContent = entry.editorOpen ? "Hide Edit Details" : "Edit Details";
+    editor.classList.toggle("open", entry.editorOpen);
+    select.value = entry.selectedId;
+    cond.value = entry.condition;
     addBtn.disabled = stock <= 0;
     addBtn.textContent = stock <= 0 ? "Out of Stock" : "Add to Shopify";
   }
 
-  select.onchange = updateCard;
+  select.onchange = () => {
+    entry.selectedId = select.value;
+    entry.edits = {};
+    syncEditorInputs();
+    updateCard();
+  };
+
+  cond.onchange = () => {
+    entry.condition = cond.value;
+  };
+
+  editBtn.onclick = () => {
+    entry.editorOpen = !entry.editorOpen;
+    if (entry.editorOpen){
+      syncEditorInputs();
+    }
+    updateCard();
+  };
+
+  resetBtn.onclick = () => {
+    entry.edits = {};
+    syncEditorInputs();
+    updateCard();
+  };
 
   addBtn.onclick = async ()=>{
-    const current = getCurrentOption();
+    const item = buildBulkImportItem(entry);
+    if (!item) return;
 
     await fetch("/import", {
       method: "POST",
       headers: { "Content-Type":"application/json" },
-      body: JSON.stringify({
-        items:[{
-          id: current.id,
-          condition: cond.value,
-          barcode: current.barcode
-        }]
-      })
+      body: JSON.stringify({ items: [item] })
     });
 
     await loadImportStatus();
     alert("Added");
   };
 
+  syncEditorInputs();
   updateCard();
   container.appendChild(card);
 }
