@@ -318,6 +318,66 @@ function renderSyncStatus(sync = {}){
   `;
 }
 
+function renderSpreadsheetStatus(spreadsheet = {}){
+  const box = document.getElementById("spreadsheetStatus");
+  if (!box) return;
+
+  const newBarcodes = Array.isArray(spreadsheet.spreadsheetDelta?.newBarcodes)
+    ? spreadsheet.spreadsheetDelta.newBarcodes.length
+    : 0;
+  const seeded = Boolean(spreadsheet.spreadsheetDelta?.seeded);
+  const queued = Number(spreadsheet.autoImport?.queued || 0);
+  const pending = Number(spreadsheet.pendingAutoImports ?? spreadsheet.autoImport?.pending ?? 0);
+  const stateLabel = spreadsheet.error
+    ? "Needs Attention"
+    : spreadsheet.lastRunAt
+      ? "Watching"
+      : "Waiting";
+  const stateTone = spreadsheet.error ? "bad" : "good";
+  const sourceLabel = spreadsheet.source === "csv_url"
+    ? "Live spreadsheet link"
+    : spreadsheet.source === "local_file"
+      ? "Deployed pricing.csv"
+      : "Spreadsheet source";
+
+  box.innerHTML = `
+    <div class="status-card">
+      <div class="status-badges">
+        <span class="status-pill ${stateTone}">${stateLabel}</span>
+        <span class="status-pill">${sourceLabel}</span>
+      </div>
+      <div class="status-stack" style="margin-top:14px;">
+        <div class="status-row">
+          <span class="status-label">Last Check</span>
+          <span class="status-value">${formatTimestamp(spreadsheet.lastRunAt)}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Known UPCs</span>
+          <span class="status-value">${Number(spreadsheet.knownBarcodes || 0)}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Rows Loaded</span>
+          <span class="status-value">${Number(spreadsheet.rowsRead || 0)}</span>
+        </div>
+        <div class="status-badges">
+          <span class="status-pill good">New found ${newBarcodes}</span>
+          <span class="status-pill">Queued ${queued}</span>
+          <span class="status-pill ${pending ? "warn" : ""}">Pending ${pending}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Baseline</span>
+          <span class="status-value">${seeded ? "Saved this run" : formatTimestamp(spreadsheet.baselineAt)}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Polling</span>
+          <span class="status-value">${spreadsheet.pollingEnabled ? "On" : "Cron / manual only"}</span>
+        </div>
+        ${spreadsheet.error ? `<p class="muted-note">Last spreadsheet error: ${spreadsheet.error}</p>` : ""}
+      </div>
+    </div>
+  `;
+}
+
 function renderImportStatus(importState = {}){
   const box = document.getElementById("importStatus");
   if (!box) return;
@@ -624,9 +684,13 @@ async function loadSyncStatus(){
     const res = await fetch("/sync-status");
     const data = await res.json();
     renderSyncStatus(data.sync || {});
+    renderSpreadsheetStatus(data.spreadsheet || {});
   } catch {
     renderSyncStatus({
       error: "Could not load sync status"
+    });
+    renderSpreadsheetStatus({
+      error: "Could not load spreadsheet status"
     });
   }
 }

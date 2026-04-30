@@ -30,6 +30,24 @@ let lastInventorySync = {
   summary: null,
   error: null
 };
+let lastSpreadsheetRefresh = {
+  lastRunAt: null,
+  source: null,
+  rowsRead: 0,
+  loadedCount: 0,
+  changed: false,
+  triggeredSync: false,
+  forced: false,
+  error: null,
+  spreadsheetDelta: {
+    seeded: false,
+    newBarcodes: []
+  },
+  autoImport: {
+    queued: 0,
+    pending: 0
+  }
+};
 
 const MIN_PRICE = 14.99;
 const DEFAULT_LOCATION_ID = 113713512818;
@@ -786,6 +804,18 @@ function queuePendingSpreadsheetImports(sourceMap = dataMap){
   };
 }
 
+function getSpreadsheetRefreshSnapshot(){
+  return {
+    ...lastSpreadsheetRefresh,
+    pollingEnabled: EXCEL_REFRESH_INTERVAL_MS > 0,
+    pollingIntervalMs: EXCEL_REFRESH_INTERVAL_MS,
+    knownBarcodes: spreadsheetState.knownBarcodes.length,
+    pendingAutoImports: spreadsheetState.pendingAutoImports.length,
+    baselineAt: spreadsheetState.seededAt,
+    lastSheetSeenAt: spreadsheetState.lastSeenAt
+  };
+}
+
 function escapeHtml(val){
   return String(val || "")
     .replace(/&/g, "&amp;")
@@ -1169,6 +1199,19 @@ async function loadExcel(options = {}){
       console.log("⏭️ Inventory sync skipped: spreadsheet stock unchanged");
     }
 
+    lastSpreadsheetRefresh = {
+      lastRunAt: new Date().toISOString(),
+      source,
+      rowsRead: rows.length,
+      loadedCount,
+      changed,
+      triggeredSync,
+      forced: forceInventorySync,
+      error: null,
+      spreadsheetDelta,
+      autoImport
+    };
+
     return {
       ok: true,
       source,
@@ -1183,6 +1226,11 @@ async function loadExcel(options = {}){
 
   } catch (e){
     console.log("❌ Excel load failed:", e.message);
+    lastSpreadsheetRefresh = {
+      ...lastSpreadsheetRefresh,
+      lastRunAt: new Date().toISOString(),
+      error: e.message
+    };
     return {
       ok: false,
       source: "error",
@@ -2792,7 +2840,8 @@ app.get("/sync-status",(req,res)=>{
       ...lastInventorySync,
       running: inventorySyncRunning,
       queued: inventorySyncQueued
-    }
+    },
+    spreadsheet: getSpreadsheetRefreshSnapshot()
   });
 });
 
