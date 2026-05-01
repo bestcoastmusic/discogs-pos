@@ -65,6 +65,7 @@ const EXCEL_REFRESH_INTERVAL_MS = Math.max(
   0,
   Number(process.env.EXCEL_REFRESH_INTERVAL_MS || 60000)
 );
+const MAINTENANCE_FAILURE_LIMIT = 25;
 const SYNC_TRIGGER_SECRET = String(process.env.SYNC_TRIGGER_SECRET || "").trim();
 const MAINTENANCE_CHUNK_SIZE = Math.max(
   5,
@@ -344,7 +345,8 @@ function createEmptyMaintenanceJob(label){
     currentBarcode: null,
     lastProductId: null,
     complete: false,
-    error: null
+    error: null,
+    recentFailures: []
   };
 }
 
@@ -2404,12 +2406,31 @@ function updateMaintenanceJob(jobKey, changes){
   persistMaintenanceJobs();
 }
 
+function recordMaintenanceFailure(jobKey, item, reason, titleOverride = null){
+  const failure = {
+    productId: Number(item?.productId || 0) || null,
+    barcode: item?.barcode || null,
+    title: titleOverride || maintenanceJobs[jobKey]?.currentTitle || null,
+    reason: String(reason || "Unknown maintenance failure"),
+    failedAt: new Date().toISOString()
+  };
+
+  updateMaintenanceJob(jobKey, {
+    failed: maintenanceJobs[jobKey].failed + 1,
+    error: failure.reason,
+    recentFailures: [
+      failure,
+      ...((maintenanceJobs[jobKey].recentFailures || []).filter(existing =>
+        !(existing?.productId && failure.productId && Number(existing.productId) === Number(failure.productId))
+      ))
+    ].slice(0, MAINTENANCE_FAILURE_LIMIT)
+  });
+}
+
 async function processTitleMaintenanceItem(jobKey, item){
   const bestRelease = await findBestReleaseForBarcode(item.barcode);
   if (!bestRelease){
-    updateMaintenanceJob(jobKey, {
-      failed: maintenanceJobs[jobKey].failed + 1
-    });
+    recordMaintenanceFailure(jobKey, item, "No Discogs release found for this barcode");
     return;
   }
 
@@ -2441,17 +2462,13 @@ async function processDescriptionMaintenanceItem(jobKey, item){
   });
 
   if (!item.barcode){
-    updateMaintenanceJob(jobKey, {
-      failed: maintenanceJobs[jobKey].failed + 1
-    });
+    recordMaintenanceFailure(jobKey, item, "Missing Shopify barcode", currentProduct.title || null);
     return;
   }
 
   const bestRelease = await findBestReleaseForBarcode(item.barcode);
   if (!bestRelease){
-    updateMaintenanceJob(jobKey, {
-      failed: maintenanceJobs[jobKey].failed + 1
-    });
+    recordMaintenanceFailure(jobKey, item, "No Discogs release found for this barcode", currentProduct.title || null);
     return;
   }
 
@@ -2679,10 +2696,7 @@ async function runMaintenanceChunk(jobKey){
           await processStandardsMaintenanceItem(jobKey, item);
         }
       } catch (err){
-        updateMaintenanceJob(jobKey, {
-          failed: maintenanceJobs[jobKey].failed + 1,
-          error: err.message
-        });
+        recordMaintenanceFailure(jobKey, item, err.message, maintenanceJobs[jobKey].currentTitle);
         console.log(`❌ ${jobKey.toUpperCase()} MAINTENANCE ERROR:`, item.barcode || item.productId, err.message);
       }
 

@@ -802,6 +802,46 @@ function renderMaintenanceStatus(maintenance = {}){
       </div>
     `;
 
+    const failures = Array.isArray(job.recentFailures) ? job.recentFailures.slice(0, 5) : [];
+    if (failures.length){
+      const failureBox = document.createElement("div");
+      failureBox.className = "status-card";
+      failureBox.style.marginTop = "14px";
+
+      const heading = document.createElement("div");
+      heading.className = "status-label";
+      heading.textContent = "Recent Failures";
+      failureBox.appendChild(heading);
+
+      const list = document.createElement("div");
+      list.className = "status-stack";
+      list.style.marginTop = "12px";
+
+      failures.forEach(failure => {
+        const row = document.createElement("div");
+        row.className = "history-item";
+
+        const title = document.createElement("h3");
+        title.className = "history-title";
+        title.textContent = failure.title || failure.barcode || `Product ${failure.productId || "Unknown"}`;
+
+        const meta = document.createElement("p");
+        meta.className = "history-meta";
+        meta.textContent = [
+          failure.barcode ? `UPC ${failure.barcode}` : null,
+          failure.reason || "Unknown failure",
+          formatTimestamp(failure.failedAt)
+        ].filter(Boolean).join(" • ");
+
+        row.appendChild(title);
+        row.appendChild(meta);
+        list.appendChild(row);
+      });
+
+      failureBox.appendChild(list);
+      card.appendChild(failureBox);
+    }
+
     const actions = document.createElement("div");
     actions.className = "result-actions-inline";
     actions.style.marginTop = "14px";
