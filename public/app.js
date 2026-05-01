@@ -1150,7 +1150,12 @@ function renderCard(options, container){
   resetBtn.className = "ghost-btn";
   resetBtn.textContent = "Reset Edits";
 
+  const editorAddBtn = document.createElement("button");
+  editorAddBtn.className = "primary-btn";
+  editorAddBtn.style.display = "none";
+
   editorActions.appendChild(resetBtn);
+  editorActions.appendChild(editorAddBtn);
   editor.appendChild(editorNote);
   editor.appendChild(editorGrid);
   editor.appendChild(editorActions);
@@ -1233,6 +1238,10 @@ function renderCard(options, container){
     cond.value = entry.condition;
     addBtn.disabled = stock <= 0;
     addBtn.textContent = stock <= 0 ? "Out of Stock" : "Add to Shopify";
+    addBtn.style.display = entry.editorOpen ? "none" : "inline-flex";
+    editorAddBtn.disabled = stock <= 0;
+    editorAddBtn.textContent = stock <= 0 ? "Out of Stock" : "Add to Shopify";
+    editorAddBtn.style.display = entry.editorOpen ? "inline-flex" : "none";
   }
 
   select.onchange = () => {
@@ -1260,7 +1269,7 @@ function renderCard(options, container){
     updateCard();
   };
 
-  addBtn.onclick = async ()=>{
+  async function submitItem(){
     const item = buildBulkImportItem(entry);
     if (!item) return;
 
@@ -1272,7 +1281,10 @@ function renderCard(options, container){
 
     await loadImportStatus();
     alert("Added");
-  };
+  }
+
+  addBtn.onclick = submitItem;
+  editorAddBtn.onclick = submitItem;
 
   syncEditorInputs();
   updateCard();
@@ -1533,7 +1545,18 @@ function renderBulkCard(entry, container){
   resetBtn.className = "ghost-btn";
   resetBtn.textContent = "Reset Edits";
 
+  const editorRemoveBtn = document.createElement("button");
+  editorRemoveBtn.className = "ghost-btn danger-btn";
+  editorRemoveBtn.textContent = "Remove";
+  editorRemoveBtn.style.display = "none";
+
+  const editorAddBtn = document.createElement("button");
+  editorAddBtn.className = "primary-btn";
+  editorAddBtn.style.display = "none";
+
   editorActions.appendChild(resetBtn);
+  editorActions.appendChild(editorRemoveBtn);
+  editorActions.appendChild(editorAddBtn);
   editor.appendChild(editorNote);
   editor.appendChild(editorGrid);
   editor.appendChild(editorActions);
@@ -1618,6 +1641,12 @@ function renderBulkCard(entry, container){
 
     addBtn.disabled = stock <= 0;
     addBtn.textContent = stock <= 0 ? "Out of Stock" : "Add To Shopify";
+    addBtn.style.display = entry.editorOpen ? "none" : "inline-flex";
+    removeBtn.style.display = entry.editorOpen ? "none" : "inline-flex";
+    editorAddBtn.disabled = stock <= 0;
+    editorAddBtn.textContent = stock <= 0 ? "Out of Stock" : "Add To Shopify";
+    editorAddBtn.style.display = entry.editorOpen ? "inline-flex" : "none";
+    editorRemoveBtn.style.display = entry.editorOpen ? "inline-flex" : "none";
   }
 
   select.onchange = () => {
@@ -1639,10 +1668,13 @@ function renderBulkCard(entry, container){
     updateCard();
   };
 
-  removeBtn.onclick = () => {
+  function removeCurrentCard(){
     entry.removed = true;
     card.remove();
-  };
+  }
+
+  removeBtn.onclick = removeCurrentCard;
+  editorRemoveBtn.onclick = removeCurrentCard;
 
   resetBtn.onclick = () => {
     entry.edits = {};
@@ -1650,7 +1682,7 @@ function renderBulkCard(entry, container){
     updateCard();
   };
 
-  addBtn.onclick = async ()=>{
+  async function submitItem(){
     const item = buildBulkImportItem(entry);
     if (!item) return;
 
@@ -1662,7 +1694,10 @@ function renderBulkCard(entry, container){
 
     await loadImportStatus();
     alert("Added");
-  };
+  }
+
+  addBtn.onclick = submitItem;
+  editorAddBtn.onclick = submitItem;
 
   syncEditorInputs();
   updateCard();
