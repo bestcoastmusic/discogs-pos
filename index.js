@@ -351,6 +351,7 @@ function createEmptyMaintenanceJob(label){
 function createDefaultMaintenanceJobs(){
   return {
     titles: createEmptyMaintenanceJob("Title Backfill"),
+    descriptions: createEmptyMaintenanceJob("Description Backfill"),
     tags: createEmptyMaintenanceJob("Collection Cleanup"),
     standards: createEmptyMaintenanceJob("Cost + Weight Backfill")
   };
@@ -401,6 +402,7 @@ function getMaintenanceJobSnapshot(job){
 function getMaintenanceStatusSnapshot(){
   return {
     titles: getMaintenanceJobSnapshot(maintenanceJobs.titles),
+    descriptions: getMaintenanceJobSnapshot(maintenanceJobs.descriptions),
     tags: getMaintenanceJobSnapshot(maintenanceJobs.tags),
     standards: getMaintenanceJobSnapshot(maintenanceJobs.standards)
   };
@@ -2235,6 +2237,15 @@ async function fetchShopifyProductMetadata(productId){
   return res.data.product;
 }
 
+async function fetchShopifyProductDescriptionMetadata(productId){
+  const res = await shopifyRequest(`/products/${productId}.json?fields=id,title,body_html`);
+  if (!res.ok || !res.data?.product){
+    throw new Error(`Shopify product fetch failed (${res.status})`);
+  }
+
+  return res.data.product;
+}
+
 async function fetchShopifyVariantDetails(variantId){
   const res = await shopifyRequest(
     `/variants/${variantId}.json?fields=id,product_id,inventory_item_id,weight,weight_unit,requires_shipping`
@@ -2312,6 +2323,13 @@ async function updateShopifyProductBodyHtml(productId, bodyHtml){
   return res.data.product;
 }
 
+function normalizeBodyHtmlForCompare(value){
+  return String(value || "")
+    .replace(/>\s+</g, "><")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function buildBcmDescriptionPayload(item){
   return {
     releaseId: item.id,
@@ -2340,6 +2358,7 @@ function buildBcmDescriptionPayload(item){
 function resetMaintenanceJob(jobKey){
   const labels = {
     titles: "Title Backfill",
+    descriptions: "Description Backfill",
     tags: "Collection Cleanup",
     standards: "Cost + Weight Backfill"
   };
@@ -2407,6 +2426,51 @@ async function processTitleMaintenanceItem(jobKey, item){
   });
 
   console.log("✅ TITLE MAINTENANCE:", item.barcode, "->", bestRelease.title);
+}
+
+async function processDescriptionMaintenanceItem(jobKey, item){
+  const currentProduct = await fetchShopifyProductDescriptionMetadata(item.productId);
+  updateMaintenanceJob(jobKey, {
+    currentTitle: currentProduct.title || null
+  });
+
+  if (!item.barcode){
+    updateMaintenanceJob(jobKey, {
+      failed: maintenanceJobs[jobKey].failed + 1
+    });
+    return;
+  }
+
+  const bestRelease = await findBestReleaseForBarcode(item.barcode);
+  if (!bestRelease){
+    updateMaintenanceJob(jobKey, {
+      failed: maintenanceJobs[jobKey].failed + 1
+    });
+    return;
+  }
+
+  updateMaintenanceJob(jobKey, {
+    matched: maintenanceJobs[jobKey].matched + 1,
+    currentTitle: bestRelease.title || currentProduct.title || null
+  });
+
+  const desiredBodyHtml = buildBcmDescriptionHtml(bestRelease);
+  const currentBodyHtml = normalizeBodyHtmlForCompare(currentProduct.body_html);
+  const nextBodyHtml = normalizeBodyHtmlForCompare(desiredBodyHtml);
+
+  if (currentBodyHtml === nextBodyHtml){
+    updateMaintenanceJob(jobKey, {
+      unchanged: maintenanceJobs[jobKey].unchanged + 1
+    });
+    return;
+  }
+
+  await updateShopifyProductBodyHtml(item.productId, desiredBodyHtml);
+  updateMaintenanceJob(jobKey, {
+    updated: maintenanceJobs[jobKey].updated + 1
+  });
+
+  console.log("✅ DESCRIPTION MAINTENANCE:", item.barcode, "->", bestRelease.title);
 }
 
 async function processTagMaintenanceItem(jobKey, item){
@@ -2601,6 +2665,8 @@ async function runMaintenanceChunk(jobKey){
       try {
         if (jobKey === "titles"){
           await processTitleMaintenanceItem(jobKey, item);
+        } else if (jobKey === "descriptions"){
+          await processDescriptionMaintenanceItem(jobKey, item);
         } else if (jobKey === "tags"){
           await processTagMaintenanceItem(jobKey, item);
         } else if (jobKey === "standards"){

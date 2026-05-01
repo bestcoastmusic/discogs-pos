@@ -721,6 +721,11 @@ function renderMaintenanceStatus(maintenance = {}){
       description: "Runs the next saved batch of title cleanup without needing a long all-at-once backfill."
     },
     {
+      key: "descriptions",
+      label: "Description Backfill",
+      description: "Runs the next saved batch of BCM product description updates for existing Shopify items."
+    },
+    {
       key: "tags",
       label: "Collection Cleanup",
       description: "Runs the next saved batch of tag and product-type cleanup."
