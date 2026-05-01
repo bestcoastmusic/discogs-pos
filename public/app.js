@@ -90,6 +90,8 @@ function buildBulkEntry(result, index){
   return {
     key: `${index}:${result.barcode || firstOption?.barcode || "unknown"}`,
     requestedBarcode: result.barcode || "",
+    requestedInput: result.requestedInput || result.barcode || "",
+    requestedKind: result.requestedKind || "barcode",
     options: result.options || [],
     selectedId: firstOption?.id || "",
     condition: "M",
@@ -1264,7 +1266,11 @@ function renderBulkErrorCard(entry, container){
 
   const requested = document.createElement("span");
   requested.className = "chip chip-barcode";
-  requested.textContent = entry.requestedBarcode ? `Requested UPC ${entry.requestedBarcode}` : "Requested UPC missing";
+  requested.textContent = entry.requestedInput
+    ? entry.requestedKind === "release_id"
+      ? `Requested Release ID ${entry.requestedInput.replace(/^.*?(\d+)$/, "$1")}`
+      : `Requested UPC ${entry.requestedInput}`
+    : "Requested lookup missing";
 
   const removeBtn = document.createElement("button");
   removeBtn.className = "ghost-btn";
@@ -1532,9 +1538,11 @@ function renderBulkCard(entry, container){
     const stock = Number(current.stock || 0);
     const importState = getBulkImportState(entry);
     const reviewState = getBulkReviewState(entry);
-    requested.textContent = entry.requestedBarcode
-      ? `Requested UPC ${entry.requestedBarcode}`
-      : "Requested UPC missing";
+    requested.textContent = entry.requestedInput
+      ? entry.requestedKind === "release_id"
+        ? `Requested Release ID ${entry.requestedInput.replace(/^.*?(\d+)$/, "$1")}`
+        : `Requested UPC ${entry.requestedInput}`
+      : "Requested lookup missing";
 
     title.textContent = current.title || "Untitled release";
     meta.textContent =

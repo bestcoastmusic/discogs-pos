@@ -2682,7 +2682,17 @@ app.post("/search", async (req,res)=>{
 
 app.post("/bulk-start",(req,res)=>{
   const items = (req.body.items || [])
-    .map(item => normalizeBarcode(item))
+    .map(item => String(item || "").trim())
+    .filter(Boolean)
+    .map(item => {
+      const lookup = parseDiscogsLookupInput(item);
+      if (lookup.kind === "unknown") return null;
+
+      return {
+        raw: item,
+        ...lookup
+      };
+    })
     .filter(Boolean);
 
   const jobId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -2723,19 +2733,25 @@ async function processBulkJob(jobId, items){
   const job = jobs[jobId];
   if (!job) return;
 
-  for (const barcode of items){
+  for (const item of items){
     try {
-      const options = await buildReleaseOptions(barcode, "bulk");
+      const options = item.kind === "release_id"
+        ? await buildReleaseOptionsForReleaseId(item.value)
+        : await buildReleaseOptions(item.value, "bulk");
 
       job.results.push({
-        barcode,
+        barcode: item.kind === "barcode" ? item.value : "",
+        requestedInput: item.raw,
+        requestedKind: item.kind,
         options,
         best: options[0] || null,
         error: options.length ? null : "No Discogs match found"
       });
     } catch (err){
       job.results.push({
-        barcode,
+        barcode: item.kind === "barcode" ? item.value : "",
+        requestedInput: item.raw,
+        requestedKind: item.kind,
         options: [],
         best: null,
         error: err.message
