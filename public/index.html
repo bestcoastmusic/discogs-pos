@@ -565,7 +565,16 @@
       position: sticky;
       top: 22px;
       display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 22px;
+    }
+
+    .history-panel > .panel {
+      min-width: 0;
+    }
+
+    .panel-wide {
+      grid-column: 1 / -1;
     }
 
     .history-item {
@@ -690,6 +699,7 @@
 
       .history-panel {
         position: static;
+        grid-template-columns: 1fr;
       }
 
       .result-preview {
@@ -866,7 +876,7 @@
           </div>
         </section>
 
-        <section class="panel">
+        <section class="panel panel-wide">
           <div class="panel-inner">
             <div class="section-head">
               <div>
