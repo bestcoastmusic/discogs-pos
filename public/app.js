@@ -538,6 +538,11 @@ function renderMaintenanceStatus(maintenance = {}){
       key: "tags",
       label: "Collection Cleanup",
       description: "Runs the next saved batch of tag and product-type cleanup."
+    },
+    {
+      key: "standards",
+      label: "Cost + Weight Backfill",
+      description: "Runs the next saved batch to push spreadsheet cost and the default 1 lb 9 oz weight onto older Shopify items."
     }
   ];
 

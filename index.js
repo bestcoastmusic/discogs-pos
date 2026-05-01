@@ -351,7 +351,8 @@ function createEmptyMaintenanceJob(label){
 function createDefaultMaintenanceJobs(){
   return {
     titles: createEmptyMaintenanceJob("Title Backfill"),
-    tags: createEmptyMaintenanceJob("Collection Cleanup")
+    tags: createEmptyMaintenanceJob("Collection Cleanup"),
+    standards: createEmptyMaintenanceJob("Cost + Weight Backfill")
   };
 }
 
@@ -400,7 +401,8 @@ function getMaintenanceJobSnapshot(job){
 function getMaintenanceStatusSnapshot(){
   return {
     titles: getMaintenanceJobSnapshot(maintenanceJobs.titles),
-    tags: getMaintenanceJobSnapshot(maintenanceJobs.tags)
+    tags: getMaintenanceJobSnapshot(maintenanceJobs.tags),
+    standards: getMaintenanceJobSnapshot(maintenanceJobs.standards)
   };
 }
 
@@ -524,6 +526,12 @@ function loadMaintenanceJobsFromDisk(){
     },
     tags: {
       ...mergeMaintenanceJobState(parsed?.tags, defaults.tags),
+      running: false,
+      currentTitle: null,
+      currentBarcode: null
+    },
+    standards: {
+      ...mergeMaintenanceJobState(parsed?.standards, defaults.standards),
       running: false,
       currentTitle: null,
       currentBarcode: null
@@ -1928,6 +1936,26 @@ async function fetchShopifyProductMetadata(productId){
   return res.data.product;
 }
 
+async function fetchShopifyVariantDetails(variantId){
+  const res = await shopifyRequest(
+    `/variants/${variantId}.json?fields=id,product_id,inventory_item_id,weight,weight_unit,requires_shipping`
+  );
+  if (!res.ok || !res.data?.variant){
+    throw new Error(`Shopify variant fetch failed (${res.status})`);
+  }
+
+  return res.data.variant;
+}
+
+async function fetchShopifyInventoryItem(inventoryItemId){
+  const res = await shopifyRequest(`/inventory_items/${inventoryItemId}.json?fields=id,cost`);
+  if (!res.ok || !res.data?.inventory_item){
+    throw new Error(`Shopify inventory item fetch failed (${res.status})`);
+  }
+
+  return res.data.inventory_item;
+}
+
 async function updateShopifyProductTitle(productId, title){
   const res = await shopifyRequest(`/products/${productId}.json`, {
     method: "PUT",
@@ -1968,7 +1996,8 @@ async function updateShopifyProductTagsAndType(productId, { tags, productType })
 function resetMaintenanceJob(jobKey){
   const labels = {
     titles: "Title Backfill",
-    tags: "Collection Cleanup"
+    tags: "Collection Cleanup",
+    standards: "Cost + Weight Backfill"
   };
   maintenanceJobs[jobKey] = createEmptyMaintenanceJob(labels[jobKey] || "Maintenance");
   persistMaintenanceJobs();
@@ -1989,6 +2018,8 @@ async function buildMaintenanceProductList(){
     seenProductIds.add(productId);
     uniqueProducts.push({
       productId,
+      variantId: Number(variant.id || 0),
+      inventoryItemId: Number(variant.inventory_item_id || 0),
       barcode: getVariantBarcode(variant)
     });
   }
@@ -2081,6 +2112,77 @@ async function processTagMaintenanceItem(jobKey, item){
   );
 }
 
+async function processStandardsMaintenanceItem(jobKey, item){
+  const currentProduct = await fetchShopifyProductMetadata(item.productId);
+  updateMaintenanceJob(jobKey, {
+    currentTitle: currentProduct.title || null
+  });
+
+  const currentVariant = await fetchShopifyVariantDetails(item.variantId);
+  const spreadsheetMatch = item.barcode ? findMatch(item.barcode) : null;
+  const desiredCost = Number.isFinite(Number(spreadsheetMatch?.cost)) && Number(spreadsheetMatch?.cost) > 0
+    ? Number(spreadsheetMatch.cost).toFixed(2)
+    : null;
+  const currentWeight = Number.parseFloat(currentVariant.weight);
+  const weightNeedsUpdate = !currentVariant.requires_shipping ||
+    String(currentVariant.weight_unit || "").toLowerCase() !== DEFAULT_VARIANT_WEIGHT_UNIT ||
+    currentWeight !== DEFAULT_VARIANT_WEIGHT_OZ;
+
+  let costNeedsUpdate = false;
+  if (desiredCost && currentVariant.inventory_item_id){
+    const inventoryItem = await fetchShopifyInventoryItem(currentVariant.inventory_item_id);
+    const currentCost = Number.isFinite(Number(inventoryItem.cost))
+      ? Number(inventoryItem.cost).toFixed(2)
+      : "";
+    costNeedsUpdate = currentCost !== desiredCost;
+  }
+
+  if (spreadsheetMatch){
+    updateMaintenanceJob(jobKey, {
+      matched: maintenanceJobs[jobKey].matched + 1
+    });
+  }
+
+  if (!weightNeedsUpdate && !costNeedsUpdate){
+    updateMaintenanceJob(jobKey, {
+      unchanged: maintenanceJobs[jobKey].unchanged + 1
+    });
+    return;
+  }
+
+  if (weightNeedsUpdate){
+    const variantRes = await shopifyRequest(`/variants/${currentVariant.id}.json`, {
+      method: "PUT",
+      body: JSON.stringify({
+        variant: {
+          id: currentVariant.id,
+          ...buildVariantWeightPayload()
+        }
+      })
+    });
+
+    if (!variantRes.ok || !variantRes.data?.variant){
+      throw new Error(`Shopify variant standards update failed (${variantRes.status})`);
+    }
+  }
+
+  if (costNeedsUpdate && currentVariant.inventory_item_id){
+    await updateInventoryItemCost(currentVariant.inventory_item_id, desiredCost);
+  }
+
+  updateMaintenanceJob(jobKey, {
+    updated: maintenanceJobs[jobKey].updated + 1
+  });
+
+  console.log(
+    "✅ STANDARDS MAINTENANCE:",
+    item.barcode || `product:${item.productId}`,
+    "weight",
+    `${DEFAULT_VARIANT_WEIGHT_OZ}${DEFAULT_VARIANT_WEIGHT_UNIT}`,
+    desiredCost ? `cost ${desiredCost}` : "cost unchanged"
+  );
+}
+
 async function runMaintenanceChunk(jobKey){
   const currentJob = maintenanceJobs[jobKey];
   if (!currentJob){
@@ -2103,15 +2205,23 @@ async function runMaintenanceChunk(jobKey){
   });
 
   try {
-    if (jobKey === "tags"){
+    if (jobKey === "tags" || jobKey === "standards"){
       const refresh = await loadExcel({
-        syncReason: "maintenance tag refresh",
+        syncReason: jobKey === "tags"
+          ? "maintenance tag refresh"
+          : "maintenance standards refresh",
         forceInventorySync: false,
         skipInventorySync: true
       });
 
       if (!refresh?.ok){
-        throw new Error(refresh?.error || "Spreadsheet refresh failed before collection cleanup");
+        throw new Error(
+          refresh?.error || (
+            jobKey === "tags"
+              ? "Spreadsheet refresh failed before collection cleanup"
+              : "Spreadsheet refresh failed before cost and weight backfill"
+          )
+        );
       }
     }
 
@@ -2149,6 +2259,8 @@ async function runMaintenanceChunk(jobKey){
           await processTitleMaintenanceItem(jobKey, item);
         } else if (jobKey === "tags"){
           await processTagMaintenanceItem(jobKey, item);
+        } else if (jobKey === "standards"){
+          await processStandardsMaintenanceItem(jobKey, item);
         }
       } catch (err){
         updateMaintenanceJob(jobKey, {
