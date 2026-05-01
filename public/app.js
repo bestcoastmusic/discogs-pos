@@ -3,6 +3,19 @@ console.log("POS FINAL STABLE");
 let bulkItems = [];
 let bulkRenderedCount = 0;
 let stream;
+const GENRE_OPTIONS = [
+  "Rock",
+  "Jazz",
+  "Other",
+  "R&B",
+  "Reggae",
+  "Electronic",
+  "Pop",
+  "Hip Hop",
+  "Country",
+  "Classical",
+  "Metal"
+];
 
 window.onload = function(){
   document.getElementById("scanBtn").onclick = scan;
@@ -1076,7 +1089,7 @@ function renderCard(options, container){
   const editorGrid = document.createElement("div");
   editorGrid.className = "editor-grid";
 
-  function createEditorField(labelText, key, { type = "text", rows = 3, wide = false } = {}){
+  function createEditorField(labelText, key, { type = "text", rows = 3, wide = false, options = null } = {}){
     const field = document.createElement("div");
     field.className = `field-stack${wide ? " editor-wide" : ""}`;
 
@@ -1084,13 +1097,22 @@ function renderCard(options, container){
     label.className = "field-label";
     label.textContent = labelText;
 
-    const input = type === "textarea"
+    const input = type === "select"
+      ? document.createElement("select")
+      : type === "textarea"
       ? document.createElement("textarea")
       : document.createElement("input");
 
     input.className = "control-input";
 
-    if (type === "textarea"){
+    if (type === "select"){
+      (options || []).forEach(optionValue => {
+        const option = document.createElement("option");
+        option.value = optionValue;
+        option.textContent = optionValue;
+        input.appendChild(option);
+      });
+    } else if (type === "textarea"){
       input.rows = rows;
     } else {
       input.type = type;
@@ -1113,7 +1135,7 @@ function renderCard(options, container){
     basePrice: createEditorField("Price", "basePrice", { type: "number" }),
     stock: createEditorField("Stock", "stock", { type: "number" }),
     color: createEditorField("Color", "color"),
-    genre: createEditorField("Genre", "genre"),
+    genre: createEditorField("Genre", "genre", { type: "select", options: GENRE_OPTIONS }),
     year: createEditorField("Year", "year"),
     country: createEditorField("Country", "country"),
     label: createEditorField("Label", "label"),
@@ -1450,7 +1472,7 @@ function renderBulkCard(entry, container){
   const editorGrid = document.createElement("div");
   editorGrid.className = "editor-grid";
 
-  function createEditorField(labelText, key, { type = "text", rows = 3, wide = false } = {}){
+  function createEditorField(labelText, key, { type = "text", rows = 3, wide = false, options = null } = {}){
     const field = document.createElement("div");
     field.className = `field-stack${wide ? " editor-wide" : ""}`;
 
@@ -1458,13 +1480,22 @@ function renderBulkCard(entry, container){
     label.className = "field-label";
     label.textContent = labelText;
 
-    const input = type === "textarea"
+    const input = type === "select"
+      ? document.createElement("select")
+      : type === "textarea"
       ? document.createElement("textarea")
       : document.createElement("input");
 
     input.className = "control-input";
 
-    if (type === "textarea"){
+    if (type === "select"){
+      (options || []).forEach(optionValue => {
+        const option = document.createElement("option");
+        option.value = optionValue;
+        option.textContent = optionValue;
+        input.appendChild(option);
+      });
+    } else if (type === "textarea"){
       input.rows = rows;
     } else {
       input.type = type;
@@ -1487,7 +1518,7 @@ function renderBulkCard(entry, container){
     basePrice: createEditorField("Price", "basePrice", { type: "number" }),
     stock: createEditorField("Stock", "stock", { type: "number" }),
     color: createEditorField("Color", "color"),
-    genre: createEditorField("Genre", "genre"),
+    genre: createEditorField("Genre", "genre", { type: "select", options: GENRE_OPTIONS }),
     year: createEditorField("Year", "year"),
     country: createEditorField("Country", "country"),
     label: createEditorField("Label", "label"),

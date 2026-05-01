@@ -1900,7 +1900,7 @@ async function fetchRelease(id, barcode){
     cost: Number.isFinite(Number(match?.cost)) && Number(match?.cost) > 0
       ? Number(match.cost).toFixed(2)
       : null,
-    stock: match?.stock ?? 0,
+    stock: match ? (match.stock ?? 0) : 1,
     year,
     country,
     label,
