@@ -75,6 +75,8 @@ const AUTO_IMPORT_MAX_PER_REFRESH = Math.max(
   1,
   Number(process.env.AUTO_IMPORT_MAX_PER_REFRESH || 20)
 );
+const DEFAULT_VARIANT_WEIGHT_OZ = 25;
+const DEFAULT_VARIANT_WEIGHT_UNIT = "oz";
 const COLLECTION_TAG_ALLOWLIST = new Set(
   String(process.env.SHOPIFY_COLLECTION_TAGS || "")
     .split(/[,\n]/)
@@ -1787,6 +1789,9 @@ async function fetchRelease(id, barcode){
     descriptionText,
     image: r.images?.[0]?.uri || "",
     basePrice: match ? calculatePrice(match?.cost) : marketPrice,
+    cost: Number.isFinite(Number(match?.cost)) && Number(match?.cost) > 0
+      ? Number(match.cost).toFixed(2)
+      : null,
     stock: match?.stock ?? 0,
     year,
     country,
@@ -2517,6 +2522,38 @@ async function processBulkJob(jobId, items){
 }
 
 // ----------------------------
+function buildVariantWeightPayload(){
+  return {
+    requires_shipping: true,
+    weight: DEFAULT_VARIANT_WEIGHT_OZ,
+    weight_unit: DEFAULT_VARIANT_WEIGHT_UNIT
+  };
+}
+
+async function updateInventoryItemCost(inventoryItemId, cost){
+  const amount = Number.parseFloat(cost);
+  if (!Number.isFinite(amount) || amount <= 0){
+    return null;
+  }
+
+  const res = await shopifyRequest(`/inventory_items/${inventoryItemId}.json`, {
+    method: "PUT",
+    body: JSON.stringify({
+      inventory_item: {
+        id: inventoryItemId,
+        cost: amount.toFixed(2)
+      }
+    })
+  });
+
+  if (!res.ok || !res.data?.inventory_item){
+    console.log("❌ INVENTORY COST ERROR:", res.data);
+    throw new Error(`Shopify inventory item cost update failed (${res.status})`);
+  }
+
+  return res.data.inventory_item;
+}
+
 async function createShopifyProduct(item){
   const tags = buildShopifyTags(item);
   const res = await shopifyRequest("/products.json", {
@@ -2534,7 +2571,8 @@ async function createShopifyProduct(item){
           sku: item.barcode || undefined,
           inventory_management: "shopify",
           inventory_policy: "deny",
-          tracked: true
+          tracked: true,
+          ...buildVariantWeightPayload()
         }]
       }
     })
@@ -2575,7 +2613,8 @@ async function updateShopifyProduct(variant, item){
         id: variant.id,
         price: item.basePrice,
         barcode: item.barcode || undefined,
-        sku: item.barcode || undefined
+        sku: item.barcode || undefined,
+        ...buildVariantWeightPayload()
       }
     })
   });
@@ -2616,6 +2655,15 @@ async function upsertProduct(item){
 
   if (!variant?.inventory_item_id){
     throw new Error("Missing Shopify inventory item id");
+  }
+
+  if (item.cost){
+    try {
+      const inventoryItem = await updateInventoryItemCost(variant.inventory_item_id, item.cost);
+      console.log("💲 COST SET:", inventoryItem?.id || variant.inventory_item_id, inventoryItem?.cost || item.cost);
+    } catch (err){
+      console.log("⚠️ COST UPDATE SKIPPED:", item.barcode || variant.inventory_item_id, err.message);
+    }
   }
 
   await syncInventoryForVariant(variant, item.stock);
