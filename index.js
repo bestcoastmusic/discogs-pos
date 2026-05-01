@@ -1403,6 +1403,45 @@ async function searchDiscogsByBarcode(barcode){
   return (data.results || []).slice(0, 5);
 }
 
+function parseDiscogsLookupInput(input){
+  const raw = String(input || "").trim();
+  if (!raw){
+    return {
+      kind: "unknown",
+      value: ""
+    };
+  }
+
+  const releaseUrlMatch = raw.match(/discogs\.com\/release\/(\d+)/i);
+  if (releaseUrlMatch){
+    return {
+      kind: "release_id",
+      value: releaseUrlMatch[1]
+    };
+  }
+
+  const prefixedReleaseMatch = raw.match(/^(?:r|release[:#\s-]*)(\d+)$/i);
+  if (prefixedReleaseMatch){
+    return {
+      kind: "release_id",
+      value: prefixedReleaseMatch[1]
+    };
+  }
+
+  const digits = raw.replace(/\D/g, "");
+  if (!digits){
+    return {
+      kind: "unknown",
+      value: raw
+    };
+  }
+
+  return {
+    kind: digits.length >= 11 ? "barcode" : "release_id",
+    value: digits
+  };
+}
+
 async function shopifyRequest(pathOrUrl, options = {}){
   const store = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_TOKEN;
@@ -1920,20 +1959,8 @@ async function findBestReleaseForBarcode(barcode, maxResults = 3){
   return null;
 }
 
-async function buildReleaseOptions(barcode, mode = "single"){
-  const rawResults = await searchDiscogsByBarcode(barcode);
-  const prioritizedResults = sortResultsByCountryPreference(rawResults);
-  const results = mode === "bulk"
-    ? prioritizedResults.slice(0, DISCOGS_BULK_OPTION_LIMIT)
-    : prioritizedResults;
-  const options = [];
-
-  for (const result of results){
-    const full = await fetchRelease(result.id, barcode);
-    if (full) options.push(full);
-  }
-
-  const requestedCandidates = getBarcodeCandidates(barcode);
+async function decorateReleaseOptions(options, requestedBarcode = ""){
+  const requestedCandidates = getBarcodeCandidates(requestedBarcode);
   const titleCounts = new Map();
 
   options.forEach(option => {
@@ -1977,6 +2004,36 @@ async function buildReleaseOptions(barcode, mode = "single"){
   }
 
   return sortResultsByCountryPreference(options);
+}
+
+async function buildReleaseOptionsForReleaseId(releaseId){
+  const numericId = String(releaseId || "").replace(/\D/g, "");
+  if (!numericId){
+    return [];
+  }
+
+  const full = await fetchRelease(numericId, "");
+  if (!full){
+    return [];
+  }
+
+  return await decorateReleaseOptions([full], "");
+}
+
+async function buildReleaseOptions(barcode, mode = "single"){
+  const rawResults = await searchDiscogsByBarcode(barcode);
+  const prioritizedResults = sortResultsByCountryPreference(rawResults);
+  const results = mode === "bulk"
+    ? prioritizedResults.slice(0, DISCOGS_BULK_OPTION_LIMIT)
+    : prioritizedResults;
+  const options = [];
+
+  for (const result of results){
+    const full = await fetchRelease(result.id, barcode);
+    if (full) options.push(full);
+  }
+
+  return await decorateReleaseOptions(options, barcode);
 }
 
 async function fetchShopifyProductTitle(productId){
@@ -2607,9 +2664,12 @@ async function runTagBackfill(){
 
 // ----------------------------
 app.post("/search", async (req,res)=>{
-  const { barcode } = req.body;
+  const input = String(req.body?.barcode || req.body?.input || "").trim();
+  const lookup = parseDiscogsLookupInput(input);
   try {
-    const results = await buildReleaseOptions(barcode, "single");
+    const results = lookup.kind === "release_id"
+      ? await buildReleaseOptionsForReleaseId(lookup.value)
+      : await buildReleaseOptions(lookup.value, "single");
     res.json({ results });
   } catch (err){
     console.log("❌ SEARCH ERROR:", err.message);

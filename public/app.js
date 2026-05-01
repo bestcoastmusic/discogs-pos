@@ -789,7 +789,7 @@ async function runInventorySync(){
 
 async function scan(){
   const barcode = document.getElementById("barcode").value.trim();
-  if (!barcode) return alert("Enter barcode");
+  if (!barcode) return alert("Enter a barcode or Discogs release ID");
 
   const res = await fetch("/search", {
     method: "POST",
@@ -805,7 +805,7 @@ async function scan(){
     renderEmptyState(
       box,
       "No Discogs results",
-      "Try another barcode or confirm the UPC is in Discogs."
+      "Try another barcode, a Discogs release ID, or confirm the item exists in Discogs."
     );
     return;
   }
