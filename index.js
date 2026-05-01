@@ -945,6 +945,177 @@ function buildDescriptionText({ year, country, label, format, extras, notes }){
     [year, country, label, format].filter(Boolean).join(" • ");
 }
 
+// ----------------------------
+// BCM description feature start
+function buildCatalogNumber(release){
+  return String(release?.labels?.[0]?.catno || "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildIdentifierSummary(release){
+  const parts = (release?.identifiers || [])
+    .map(identifier => {
+      const type = String(identifier?.type || "").trim();
+      const value = String(identifier?.value || "").replace(/\s+/g, " ").trim();
+      if (!type || !value) return "";
+      return `${type}: ${value}`;
+    })
+    .filter(Boolean);
+
+  return parts[0] || "";
+}
+
+function buildPressingDetails(release, color, catalogNumber){
+  const pieces = [];
+  const colorLabel = titleCaseWords(color || "");
+  const formatDetails = (release?.formats || [])
+    .flatMap(format => format?.descriptions || [])
+    .map(value => String(value || "").trim())
+    .filter(Boolean);
+
+  if (colorLabel){
+    pieces.push(`${colorLabel} vinyl`);
+  }
+
+  formatDetails.forEach(detail => {
+    if (!pieces.some(existing => existing.toLowerCase() === detail.toLowerCase())){
+      pieces.push(detail);
+    }
+  });
+
+  if (catalogNumber){
+    pieces.push(`Catalog #${catalogNumber}`);
+  }
+
+  if (!pieces.length){
+    return "Pressing details: See notes / verify before listing";
+  }
+
+  return pieces.join(" • ");
+}
+
+function pickHighlightTracks(tracklist = []){
+  const blacklist = /\b(intro|interlude|skit|outro|reprise|spoken word)\b/i;
+  const picks = [];
+
+  for (const track of tracklist){
+    const title = String(track?.title || "").trim();
+    if (!title || blacklist.test(title)) continue;
+    if (!picks.includes(title)){
+      picks.push(title);
+    }
+    if (picks.length >= 2){
+      break;
+    }
+  }
+
+  return picks;
+}
+
+function escapeHtmlAttribute(value){
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function pickGenreLead(item){
+  const values = [
+    item?.genre,
+    ...(item?.discogsGenres || []),
+    ...(item?.discogsStyles || [])
+  ]
+    .map(value => String(value || "").trim())
+    .filter(Boolean);
+
+  return values[0] || "vinyl";
+}
+
+function chooseIndefiniteArticle(value){
+  const text = String(value || "").trim();
+  if (!text) return "a";
+
+  if (/^(r&b|honest|heir|hour)/i.test(text)){
+    return "an";
+  }
+
+  return /^[aeiou]/i.test(text) ? "an" : "a";
+}
+
+function buildEraPhrase(year){
+  const numericYear = Number(year || 0);
+  if (!numericYear) return "its era";
+
+  const decade = Math.floor(numericYear / 10) * 10;
+  if (!decade) return String(year || "");
+
+  return `the ${decade}s`;
+}
+
+function buildCollectorPhrase(item){
+  const pressing = String(item?.pressingDetails || "").toLowerCase();
+
+  if (/(limited|numbered|colored|colour|vinyl|reissue|edition)/i.test(pressing)){
+    return "the kind of pressing collectors like to grab before it disappears";
+  }
+
+  if (/2lp|gatefold|deluxe/i.test(pressing)){
+    return "a strong shelf pick when you want something with a little extra collector appeal";
+  }
+
+  return "an easy one to keep in the front bin for the right listener";
+}
+
+function buildBcmBlurb(item){
+  const genreLead = pickGenreLead(item);
+  const eraPhrase = buildEraPhrase(item?.year);
+  const collectorPhrase = buildCollectorPhrase(item);
+  const article = chooseIndefiniteArticle(genreLead);
+
+  return `${article} ${genreLead.toLowerCase()} record with all the pull of ${eraPhrase}, and it feels like ${collectorPhrase}`;
+}
+
+function buildTrackParagraph(highlights){
+  if (!highlights.length){
+    return "";
+  }
+
+  const rendered = highlights
+    .slice(0, 2)
+    .map(title => `<strong>&ldquo;${escapeHtml(title)}&rdquo;</strong>`);
+
+  const joined = rendered.length === 2
+    ? `${rendered[0]} and ${rendered[1]}`
+    : rendered[0];
+
+  return `<p>Standout tracks include ${joined}, making this a great pick for fans, collectors, and anyone who loves a front-to-back listen.</p>`;
+}
+
+function buildBcmDescriptionHtml(item){
+  const pressingLine = item.pressingDetails || "Pressing details: See notes / verify before listing";
+  const highlights = Array.isArray(item.trackHighlights) ? item.trackHighlights : [];
+
+  return [
+    `<p><strong>${escapeHtml(item.artistName)} – ${escapeHtml(item.releaseName)}</strong> is ${escapeHtml(buildBcmBlurb(item))}.</p>`,
+    buildTrackParagraph(highlights),
+    `<ul>
+  <li><strong>Artist:</strong> ${escapeHtml(item.artistName)}</li>
+  <li><strong>Album:</strong> ${escapeHtml(item.releaseName)}</li>
+  <li><strong>Label:</strong> ${escapeHtml(item.label || "Unknown")}</li>
+  <li><strong>Year:</strong> ${escapeHtml(item.year || "Unknown")}</li>
+  <li><strong>Country:</strong> ${escapeHtml(item.country || "Unknown")}</li>
+  <li><strong>Format:</strong> ${escapeHtml(item.format || "Vinyl")}</li>
+  <li><strong>Pressing:</strong> ${escapeHtml(pressingLine)}</li>
+  <li><strong>Condition:</strong> New / sealed unless otherwise noted</li>
+</ul>`
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+// BCM description feature end
+
 function extractExtras(str){
   const m = String(str || "").match(/\(.*?\)/g);
   return m ? m.join(" ") : "";
@@ -1853,6 +2024,7 @@ async function fetchRelease(id, barcode){
   const year = r.year || "";
   const country = r.country || "";
   const label = r.labels?.[0]?.name || "";
+  const catalogNumber = buildCatalogNumber(r);
   const format = formatDiscogsFormat(r.formats);
   const releaseBarcode = normalizeBarcode(
     r.identifiers?.find(i => String(i.type || "").toLowerCase().includes("barcode"))?.value
@@ -1870,6 +2042,9 @@ async function fetchRelease(id, barcode){
     (r.styles || []).join(" ")
   );
   const finalColor = chooseColor(spreadsheetColor, discogsColor);
+  const pressingDetails = buildPressingDetails(r, finalColor, catalogNumber);
+  const identifierSummary = buildIdentifierSummary(r);
+  const trackHighlights = pickHighlightTracks(r.tracklist);
   const description = buildDiscogsDescription({
     year,
     country,
@@ -1904,9 +2079,15 @@ async function fetchRelease(id, barcode){
     year,
     country,
     label,
+    catalogNumber,
     format,
     genre: match?.genre || "Other",
     color: finalColor,
+    pressingDetails,
+    identifierSummary,
+    trackHighlights,
+    discogsGenres: (r.genres || []).map(value => String(value || "").trim()).filter(Boolean),
+    discogsStyles: (r.styles || []).map(value => String(value || "").trim()).filter(Boolean),
     reviewFlags: {
       fallbackBlack: finalColor === "black" && spreadsheetColor !== "black" && discogsColor !== "black",
       explicitBlack: finalColor === "black" && (spreadsheetColor === "black" || discogsColor === "black"),
@@ -2110,6 +2291,51 @@ async function updateShopifyProductTagsAndType(productId, { tags, productType })
 
   return res.data.product;
 }
+
+// ----------------------------
+// BCM description feature start
+async function updateShopifyProductBodyHtml(productId, bodyHtml){
+  const res = await shopifyRequest(`/products/${productId}.json`, {
+    method: "PUT",
+    body: JSON.stringify({
+      product: {
+        id: productId,
+        body_html: bodyHtml
+      }
+    })
+  });
+
+  if (!res.ok || !res.data?.product){
+    throw new Error(`Shopify body_html update failed (${res.status})`);
+  }
+
+  return res.data.product;
+}
+
+function buildBcmDescriptionPayload(item){
+  return {
+    releaseId: item.id,
+    barcode: item.barcode,
+    title: item.title,
+    artistName: item.artistName,
+    releaseName: item.releaseName,
+    label: item.label,
+    year: item.year,
+    country: item.country,
+    format: item.format,
+    genre: item.genre,
+    color: item.color,
+    catalogNumber: item.catalogNumber,
+    pressingDetails: item.pressingDetails,
+    identifierSummary: item.identifierSummary,
+    image: item.image,
+    reviewReasons: item.reviewReasons || [],
+    needsReview: Boolean(item.needsReview),
+    trackHighlights: item.trackHighlights || [],
+    descriptionHtml: buildBcmDescriptionHtml(item)
+  };
+}
+// BCM description feature end
 
 function resetMaintenanceJob(jobKey){
   const labels = {
@@ -2679,6 +2905,141 @@ app.post("/search", async (req,res)=>{
     });
   }
 });
+
+// ----------------------------
+// BCM description feature start
+app.post("/bcm-description/generate", async (req,res)=>{
+  const releaseId = String(req.body?.releaseId || "").replace(/\D/g, "");
+  const barcode = String(req.body?.barcode || "").trim();
+
+  if (!releaseId){
+    return res.status(400).json({
+      success: false,
+      error: "Release ID is required"
+    });
+  }
+
+  try {
+    const item = await fetchRelease(releaseId, barcode);
+    if (!item){
+      return res.status(404).json({
+        success: false,
+        error: "Could not load Discogs release details"
+      });
+    }
+
+    return res.json({
+      success: true,
+      description: buildBcmDescriptionPayload(item)
+    });
+  } catch (err){
+    console.log("❌ BCM GENERATE ERROR:", err.message);
+    return res.status(500).json({
+      success: false,
+      error: err.message || "Could not generate BCM description"
+    });
+  }
+});
+
+app.post("/bcm-description/save", async (req,res)=>{
+  const releaseId = String(req.body?.releaseId || "").replace(/\D/g, "");
+  const barcode = String(req.body?.barcode || "").trim();
+  const bodyHtml = String(req.body?.bodyHtml || "").trim();
+
+  if (!releaseId || !bodyHtml){
+    return res.status(400).json({
+      success: false,
+      error: "Release ID and body HTML are required"
+    });
+  }
+
+  try {
+    const item = await fetchRelease(releaseId, barcode);
+    if (!item?.barcode){
+      return res.status(400).json({
+        success: false,
+        error: "This release does not have a usable barcode for Shopify matching"
+      });
+    }
+
+    const existingVariant = await findExistingVariantByBarcode(item.barcode);
+    if (!existingVariant?.product_id){
+      return res.status(404).json({
+        success: false,
+        error: "No Shopify product exists for this barcode yet. Use the create button instead."
+      });
+    }
+
+    const product = await updateShopifyProductBodyHtml(existingVariant.product_id, bodyHtml);
+    return res.json({
+      success: true,
+      mode: "updated_existing_body_html",
+      productId: product.id,
+      title: product.title
+    });
+  } catch (err){
+    console.log("❌ BCM SAVE ERROR:", err.message);
+    return res.status(500).json({
+      success: false,
+      error: err.message || "Could not update Shopify description"
+    });
+  }
+});
+
+app.post("/bcm-description/create", async (req,res)=>{
+  const releaseId = String(req.body?.releaseId || "").replace(/\D/g, "");
+  const barcode = String(req.body?.barcode || "").trim();
+  const bodyHtml = String(req.body?.bodyHtml || "").trim();
+  const condition = String(req.body?.condition || "M").trim() || "M";
+
+  if (!releaseId || !bodyHtml){
+    return res.status(400).json({
+      success: false,
+      error: "Release ID and body HTML are required"
+    });
+  }
+
+  try {
+    const item = await fetchRelease(releaseId, barcode);
+    if (!item){
+      return res.status(404).json({
+        success: false,
+        error: "Could not load Discogs release details"
+      });
+    }
+
+    const existingVariant = item.barcode
+      ? await findExistingVariantByBarcode(item.barcode)
+      : null;
+    if (existingVariant){
+      return res.status(409).json({
+        success: false,
+        error: "This barcode already exists in Shopify. Use the description-only save button instead."
+      });
+    }
+
+    item.description = bodyHtml;
+    item.descriptionText = normalizeTextBlock(bodyHtml.replace(/<[^>]+>/g, " "));
+    item.condition = condition;
+
+    const variant = await upsertProduct(item);
+    pushHistoryEntry(item);
+
+    return res.json({
+      success: true,
+      mode: "created_new_product",
+      productId: variant?.product_id || null,
+      barcode: item.barcode
+    });
+  } catch (err){
+    console.log("❌ BCM CREATE ERROR:", err.message);
+    return res.status(500).json({
+      success: false,
+      error: err.message || "Could not create Shopify product"
+    });
+  }
+});
+// BCM description feature end
 
 app.post("/bulk-start",(req,res)=>{
   const items = (req.body.items || [])
