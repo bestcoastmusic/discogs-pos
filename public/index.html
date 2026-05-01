@@ -413,7 +413,7 @@
 
     .result-controls {
       display: grid;
-      grid-template-columns: minmax(0, 1.25fr) minmax(110px, 0.45fr) auto;
+      grid-template-columns: minmax(0, 1.2fr) minmax(110px, 0.42fr) auto auto;
       gap: 12px;
       margin-top: 16px;
       align-items: end;
@@ -445,9 +445,15 @@
       display: block;
     }
 
+    .details-editor.open,
+    .bcm-panel.open {
+      display: grid;
+      gap: 14px;
+    }
+
     .editor-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
       margin-top: 12px;
     }
@@ -459,6 +465,80 @@
     .field-stack {
       display: grid;
       gap: 8px;
+    }
+
+    .notes-panel {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(64, 43, 20, 0.1);
+    }
+
+    .notes-toggle {
+      cursor: pointer;
+      list-style: none;
+      font-size: 0.82rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .notes-toggle::-webkit-details-marker {
+      display: none;
+    }
+
+    .notes-panel .card-copy {
+      margin-top: 12px;
+    }
+
+    .bcm-panel.open {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-items: start;
+    }
+
+    .bcm-intro,
+    .bcm-status,
+    .bcm-facts-card,
+    .bcm-actions {
+      grid-column: 1 / -1;
+    }
+
+    .bcm-html-field {
+      min-height: 260px;
+    }
+
+    .bcm-preview-card {
+      min-height: 100%;
+      overflow-wrap: anywhere;
+    }
+
+    .bcm-facts-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .bcm-fact {
+      padding: 12px;
+      border-radius: 14px;
+      background: rgba(31, 27, 24, 0.04);
+      border: 1px solid rgba(64, 43, 20, 0.08);
+    }
+
+    .bcm-fact-label {
+      font-size: 0.74rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .bcm-fact-value {
+      margin-top: 6px;
+      font-size: 0.92rem;
+      line-height: 1.4;
+      color: var(--ink);
+      overflow-wrap: anywhere;
     }
 
     .results-list .secondary-btn {
@@ -614,6 +694,11 @@
 
       .result-preview {
         grid-template-columns: 74px minmax(0, 1fr);
+      }
+
+      .bcm-panel.open,
+      .bcm-facts-grid {
+        grid-template-columns: 1fr;
       }
 
       .cover-frame {

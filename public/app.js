@@ -97,6 +97,83 @@ function buildOptionLabel(option, bestId){
   return `${prefix}: ${option.title} (${parts.join(" • ")})`;
 }
 
+function renderBcmFactGrid(container, source, importState, reviewReasons){
+  container.innerHTML = "";
+
+  if (!source){
+    const placeholder = document.createElement("p");
+    placeholder.className = "muted-note";
+    placeholder.textContent = "Pick a pressing, then generate a BCM description to review the release facts here.";
+    container.appendChild(placeholder);
+    return;
+  }
+
+  const grid = document.createElement("div");
+  grid.className = "bcm-facts-grid";
+
+  const facts = [
+    ["Artist", source.artistName || ""],
+    ["Album", source.releaseName || source.title || ""],
+    ["Label", source.label || "Unknown"],
+    ["Year", source.year || "Unknown"],
+    ["Country", source.country || "Unknown"],
+    ["Format", source.format || "Vinyl"],
+    ["Pressing", source.pressingDetails || "Pressing details: See notes / verify before listing"],
+    ["Catalog", source.catalogNumber || "Unknown"],
+    ["Barcode", source.barcode || "No barcode"],
+    ["Identifier", source.identifierSummary || "Not provided"]
+  ];
+
+  facts.forEach(([labelText, valueText]) => {
+    if (!valueText) return;
+
+    const fact = document.createElement("div");
+    fact.className = "bcm-fact";
+
+    const label = document.createElement("div");
+    label.className = "bcm-fact-label";
+    label.textContent = labelText;
+
+    const value = document.createElement("div");
+    value.className = "bcm-fact-value";
+    value.textContent = valueText;
+
+    fact.appendChild(label);
+    fact.appendChild(value);
+    grid.appendChild(fact);
+  });
+
+  container.appendChild(grid);
+
+  const badges = document.createElement("div");
+  badges.className = "status-badges";
+  badges.style.marginTop = "12px";
+
+  const modePill = document.createElement("span");
+  modePill.className = `status-pill ${
+    importState.tone === "update"
+      ? "good"
+      : importState.tone === "create"
+        ? "warn"
+        : ""
+  }`;
+  modePill.textContent = importState.tone === "update"
+    ? "Existing Shopify product"
+    : importState.tone === "create"
+      ? "New Shopify product"
+      : "Shopify match will be checked on save";
+  badges.appendChild(modePill);
+
+  if (reviewReasons.length){
+    const reviewPill = document.createElement("span");
+    reviewPill.className = "status-pill warn";
+    reviewPill.textContent = "Needs review";
+    badges.appendChild(reviewPill);
+  }
+
+  container.appendChild(badges);
+}
+
 function buildBulkEntry(result, index){
   const firstOption = result.options?.[0] || null;
 
@@ -1029,6 +1106,16 @@ function renderCard(options, container){
   const copy = document.createElement("p");
   copy.className = "card-copy";
 
+  const notesPanel = document.createElement("details");
+  notesPanel.className = "notes-panel";
+
+  const notesSummary = document.createElement("summary");
+  notesSummary.className = "notes-toggle";
+  notesSummary.textContent = "Release Notes";
+
+  notesPanel.appendChild(notesSummary);
+  notesPanel.appendChild(copy);
+
   const importNote = document.createElement("div");
   importNote.className = "info-note";
 
@@ -1040,7 +1127,6 @@ function renderCard(options, container){
   body.appendChild(detailNote);
   body.appendChild(chips);
   body.appendChild(importNote);
-  body.appendChild(copy);
   body.appendChild(reviewNote);
 
   preview.appendChild(coverFrame);
@@ -1102,6 +1188,7 @@ function renderCard(options, container){
 
   const editor = document.createElement("div");
   editor.className = "bulk-editor";
+  editor.classList.add("details-editor");
 
   const editorNote = document.createElement("p");
   editorNote.className = "muted-note";
@@ -1184,21 +1271,26 @@ function renderCard(options, container){
   card.appendChild(toolbar);
   card.appendChild(preview);
   card.appendChild(controls);
+  card.appendChild(notesPanel);
   card.appendChild(editor);
 
   // BCM description feature start
   const bcmSection = document.createElement("div");
   bcmSection.className = "bulk-editor";
+  bcmSection.classList.add("bcm-panel");
 
   const bcmIntro = document.createElement("p");
   bcmIntro.className = "muted-note";
+  bcmIntro.classList.add("bcm-intro");
   bcmIntro.textContent = "Generate original Best Coast Music description copy from release facts, review it, then save only when you are ready.";
 
   const bcmStatus = document.createElement("div");
   bcmStatus.className = "review-note";
+  bcmStatus.classList.add("bcm-status");
 
   const bcmFactsCard = document.createElement("div");
   bcmFactsCard.className = "status-card";
+  bcmFactsCard.classList.add("bcm-facts-card");
 
   const bcmFactsStack = document.createElement("div");
   bcmFactsStack.className = "status-stack";
@@ -1206,10 +1298,12 @@ function renderCard(options, container){
 
   const bcmHtmlLabel = document.createElement("p");
   bcmHtmlLabel.className = "field-label";
+  bcmHtmlLabel.classList.add("bcm-field-label");
   bcmHtmlLabel.textContent = "Editable Shopify Body HTML";
 
   const bcmHtmlField = document.createElement("textarea");
   bcmHtmlField.className = "control-input";
+  bcmHtmlField.classList.add("bcm-html-field");
   bcmHtmlField.rows = 12;
   bcmHtmlField.placeholder = "Generated BCM HTML will appear here.";
   bcmHtmlField.addEventListener("input", () => {
@@ -1219,14 +1313,17 @@ function renderCard(options, container){
 
   const bcmPreview = document.createElement("div");
   bcmPreview.className = "status-card";
+  bcmPreview.classList.add("bcm-preview-card");
   bcmPreview.innerHTML = "<p class=\"muted-note\">Preview will appear here.</p>";
 
   const bcmPreviewLabel = document.createElement("p");
   bcmPreviewLabel.className = "field-label";
+  bcmPreviewLabel.classList.add("bcm-preview-label");
   bcmPreviewLabel.textContent = "Live Preview";
 
   const bcmActions = document.createElement("div");
   bcmActions.className = "result-actions-inline";
+  bcmActions.classList.add("bcm-actions");
 
   const bcmRegenerateBtn = document.createElement("button");
   bcmRegenerateBtn.className = "ghost-btn";
@@ -1273,72 +1370,7 @@ function renderCard(options, container){
 
   // BCM description feature start
   function renderBcmFacts(source, importState, reviewReasons){
-    bcmFactsStack.innerHTML = "";
-
-    const addRow = (labelText, valueText) => {
-      if (!valueText) return;
-
-      const row = document.createElement("div");
-      row.className = "status-row";
-
-      const label = document.createElement("span");
-      label.className = "status-label";
-      label.textContent = labelText;
-
-      const value = document.createElement("span");
-      value.className = "status-value";
-      value.textContent = valueText;
-
-      row.appendChild(label);
-      row.appendChild(value);
-      bcmFactsStack.appendChild(row);
-    };
-
-    if (!source){
-      const placeholder = document.createElement("p");
-      placeholder.className = "muted-note";
-      placeholder.textContent = "Pick a pressing, then generate a BCM description to review the release facts here.";
-      bcmFactsStack.appendChild(placeholder);
-      return;
-    }
-
-    addRow("Artist", source.artistName || "");
-    addRow("Album", source.releaseName || source.title || "");
-    addRow("Label", source.label || "Unknown");
-    addRow("Year", source.year || "Unknown");
-    addRow("Country", source.country || "Unknown");
-    addRow("Format", source.format || "Vinyl");
-    addRow("Pressing", source.pressingDetails || "Pressing details: See notes / verify before listing");
-    addRow("Catalog", source.catalogNumber || "Unknown");
-    addRow("Barcode", source.barcode || "No barcode");
-    addRow("Identifier", source.identifierSummary || "Not provided");
-
-    const badges = document.createElement("div");
-    badges.className = "status-badges";
-
-    const modePill = document.createElement("span");
-    modePill.className = `status-pill ${
-      importState.tone === "update"
-        ? "good"
-        : importState.tone === "create"
-          ? "warn"
-          : ""
-    }`;
-    modePill.textContent = importState.tone === "update"
-      ? "Existing Shopify product"
-      : importState.tone === "create"
-        ? "New Shopify product"
-        : "Shopify match will be checked on save";
-    badges.appendChild(modePill);
-
-    if (reviewReasons.length){
-      const reviewPill = document.createElement("span");
-      reviewPill.className = "status-pill warn";
-      reviewPill.textContent = "Needs review";
-      badges.appendChild(reviewPill);
-    }
-
-    bcmFactsStack.appendChild(badges);
+    renderBcmFactGrid(bcmFactsStack, source, importState, reviewReasons);
   }
   // BCM description feature end
 
@@ -1386,6 +1418,7 @@ function renderCard(options, container){
     copy.textContent =
       current.descriptionText ||
       "No additional Discogs description was available for this release.";
+    notesPanel.style.display = current.descriptionText ? "block" : "none";
 
     card.classList.toggle("needs-review", needsReview);
     reviewChip.style.display = needsReview ? "inline-flex" : "none";
@@ -1717,6 +1750,16 @@ function renderBulkCard(entry, container){
   const copy = document.createElement("p");
   copy.className = "card-copy";
 
+  const notesPanel = document.createElement("details");
+  notesPanel.className = "notes-panel";
+
+  const notesSummary = document.createElement("summary");
+  notesSummary.className = "notes-toggle";
+  notesSummary.textContent = "Release Notes";
+
+  notesPanel.appendChild(notesSummary);
+  notesPanel.appendChild(copy);
+
   const reviewNote = document.createElement("div");
   reviewNote.className = "review-note";
 
@@ -1724,7 +1767,6 @@ function renderBulkCard(entry, container){
   body.appendChild(meta);
   body.appendChild(detailNote);
   body.appendChild(chips);
-  body.appendChild(copy);
   body.appendChild(reviewNote);
 
   preview.appendChild(coverFrame);
@@ -1786,6 +1828,7 @@ function renderBulkCard(entry, container){
 
   const editor = document.createElement("div");
   editor.className = "bulk-editor";
+  editor.classList.add("details-editor");
 
   const editorNote = document.createElement("p");
   editorNote.className = "muted-note";
@@ -1874,21 +1917,26 @@ function renderBulkCard(entry, container){
   card.appendChild(toolbar);
   card.appendChild(preview);
   card.appendChild(controls);
+  card.appendChild(notesPanel);
   card.appendChild(editor);
 
   // BCM description feature start
   const bcmSection = document.createElement("div");
   bcmSection.className = "bulk-editor";
+  bcmSection.classList.add("bcm-panel");
 
   const bcmIntro = document.createElement("p");
   bcmIntro.className = "muted-note";
+  bcmIntro.classList.add("bcm-intro");
   bcmIntro.textContent = "Generate original Best Coast Music description copy from release facts, review it, then save only when you are ready.";
 
   const bcmStatus = document.createElement("div");
   bcmStatus.className = "review-note";
+  bcmStatus.classList.add("bcm-status");
 
   const bcmFactsCard = document.createElement("div");
   bcmFactsCard.className = "status-card";
+  bcmFactsCard.classList.add("bcm-facts-card");
 
   const bcmFactsStack = document.createElement("div");
   bcmFactsStack.className = "status-stack";
@@ -1896,10 +1944,12 @@ function renderBulkCard(entry, container){
 
   const bcmHtmlLabel = document.createElement("p");
   bcmHtmlLabel.className = "field-label";
+  bcmHtmlLabel.classList.add("bcm-field-label");
   bcmHtmlLabel.textContent = "Editable Shopify Body HTML";
 
   const bcmHtmlField = document.createElement("textarea");
   bcmHtmlField.className = "control-input";
+  bcmHtmlField.classList.add("bcm-html-field");
   bcmHtmlField.rows = 12;
   bcmHtmlField.placeholder = "Generated BCM HTML will appear here.";
   bcmHtmlField.addEventListener("input", () => {
@@ -1909,14 +1959,17 @@ function renderBulkCard(entry, container){
 
   const bcmPreviewLabel = document.createElement("p");
   bcmPreviewLabel.className = "field-label";
+  bcmPreviewLabel.classList.add("bcm-preview-label");
   bcmPreviewLabel.textContent = "Live Preview";
 
   const bcmPreview = document.createElement("div");
   bcmPreview.className = "status-card";
+  bcmPreview.classList.add("bcm-preview-card");
   bcmPreview.innerHTML = "<p class=\"muted-note\">Preview will appear here.</p>";
 
   const bcmActions = document.createElement("div");
   bcmActions.className = "result-actions-inline";
+  bcmActions.classList.add("bcm-actions");
 
   const bcmRegenerateBtn = document.createElement("button");
   bcmRegenerateBtn.className = "ghost-btn";
@@ -1963,72 +2016,7 @@ function renderBulkCard(entry, container){
 
   // BCM description feature start
   function renderBcmFacts(source, importState, reviewReasons){
-    bcmFactsStack.innerHTML = "";
-
-    const addRow = (labelText, valueText) => {
-      if (!valueText) return;
-
-      const row = document.createElement("div");
-      row.className = "status-row";
-
-      const label = document.createElement("span");
-      label.className = "status-label";
-      label.textContent = labelText;
-
-      const value = document.createElement("span");
-      value.className = "status-value";
-      value.textContent = valueText;
-
-      row.appendChild(label);
-      row.appendChild(value);
-      bcmFactsStack.appendChild(row);
-    };
-
-    if (!source){
-      const placeholder = document.createElement("p");
-      placeholder.className = "muted-note";
-      placeholder.textContent = "Pick a pressing, then generate a BCM description to review the release facts here.";
-      bcmFactsStack.appendChild(placeholder);
-      return;
-    }
-
-    addRow("Artist", source.artistName || "");
-    addRow("Album", source.releaseName || source.title || "");
-    addRow("Label", source.label || "Unknown");
-    addRow("Year", source.year || "Unknown");
-    addRow("Country", source.country || "Unknown");
-    addRow("Format", source.format || "Vinyl");
-    addRow("Pressing", source.pressingDetails || "Pressing details: See notes / verify before listing");
-    addRow("Catalog", source.catalogNumber || "Unknown");
-    addRow("Barcode", source.barcode || "No barcode");
-    addRow("Identifier", source.identifierSummary || "Not provided");
-
-    const badges = document.createElement("div");
-    badges.className = "status-badges";
-
-    const modePill = document.createElement("span");
-    modePill.className = `status-pill ${
-      importState.tone === "update"
-        ? "good"
-        : importState.tone === "create"
-          ? "warn"
-          : ""
-    }`;
-    modePill.textContent = importState.tone === "update"
-      ? "Existing Shopify product"
-      : importState.tone === "create"
-        ? "New Shopify product"
-        : "Shopify match will be checked on save";
-    badges.appendChild(modePill);
-
-    if (reviewReasons.length){
-      const reviewPill = document.createElement("span");
-      reviewPill.className = "status-pill warn";
-      reviewPill.textContent = "Needs review";
-      badges.appendChild(reviewPill);
-    }
-
-    bcmFactsStack.appendChild(badges);
+    renderBcmFactGrid(bcmFactsStack, source, importState, reviewReasons);
   }
   // BCM description feature end
 
@@ -2077,6 +2065,7 @@ function renderBulkCard(entry, container){
     copy.textContent =
       current.descriptionText ||
       "No additional Discogs description was available for this release.";
+    notesPanel.style.display = current.descriptionText ? "block" : "none";
 
     card.classList.toggle("needs-review", needsReview);
     reviewChip.style.display = needsReview ? "inline-flex" : "none";
