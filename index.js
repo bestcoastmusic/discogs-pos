@@ -526,6 +526,12 @@ function loadMaintenanceJobsFromDisk(){
       currentTitle: null,
       currentBarcode: null
     },
+    descriptions: {
+      ...mergeMaintenanceJobState(parsed?.descriptions, defaults.descriptions),
+      running: false,
+      currentTitle: null,
+      currentBarcode: null
+    },
     tags: {
       ...mergeMaintenanceJobState(parsed?.tags, defaults.tags),
       running: false,

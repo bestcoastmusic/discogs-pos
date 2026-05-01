@@ -860,18 +860,28 @@ async function loadMaintenanceStatus(){
 }
 
 async function runMaintenanceJob(jobKey){
-  await fetch(`/maintenance/${jobKey}/run`, {
+  const res = await fetch(`/maintenance/${jobKey}/run`, {
     method: "POST",
     headers: { "Content-Type": "application/json" }
   });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.success === false){
+    alert(data.error || "Could not start maintenance job");
+    return;
+  }
   await loadMaintenanceStatus();
 }
 
 async function resetMaintenanceJob(jobKey){
-  await fetch(`/maintenance/${jobKey}/reset`, {
+  const res = await fetch(`/maintenance/${jobKey}/reset`, {
     method: "POST",
     headers: { "Content-Type": "application/json" }
   });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.success === false){
+    alert(data.error || "Could not reset maintenance job");
+    return;
+  }
   await loadMaintenanceStatus();
 }
 
