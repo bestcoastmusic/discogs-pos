@@ -68,7 +68,7 @@ const EXCEL_REFRESH_INTERVAL_MS = Math.max(
 const SYNC_TRIGGER_SECRET = String(process.env.SYNC_TRIGGER_SECRET || "").trim();
 const MAINTENANCE_CHUNK_SIZE = Math.max(
   5,
-  Number(process.env.MAINTENANCE_CHUNK_SIZE || 25)
+  Number(process.env.MAINTENANCE_CHUNK_SIZE || 100)
 );
 const AUTO_IMPORT_NEW_TITLES = String(process.env.AUTO_IMPORT_NEW_TITLES || "1").trim() !== "0";
 const AUTO_IMPORT_MAX_PER_REFRESH = Math.max(
@@ -823,6 +823,67 @@ function getSpreadsheetRefreshSnapshot(){
     pendingAutoImports: spreadsheetState.pendingAutoImports.length,
     baselineAt: spreadsheetState.seededAt,
     lastSheetSeenAt: spreadsheetState.lastSeenAt
+  };
+}
+
+function startOfTodayIso(){
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today.toISOString();
+}
+
+function isToday(value){
+  if (!value) return false;
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())){
+    return false;
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return date >= today;
+}
+
+function getDailyDigestSnapshot(){
+  const todayHistory = history.filter(item => isToday(item.syncedAt));
+  const createdToday = todayHistory.filter(item => item.syncAction === "created").length;
+  const updatedToday = todayHistory.filter(item => item.syncAction === "updated").length;
+  const missingToday = missingSpreadsheetMatches.filter(item => isToday(item.lastSeenAt)).length;
+  const spreadsheet = getSpreadsheetRefreshSnapshot();
+  const maintenance = getMaintenanceStatusSnapshot();
+  const maintenanceRunCount = Object.values(maintenance).filter(job => isToday(job.lastRunAt)).length;
+
+  return {
+    todayStart: startOfTodayIso(),
+    imports: {
+      total: todayHistory.length,
+      created: createdToday,
+      updated: updatedToday
+    },
+    spreadsheet: {
+      lastCheckedAt: spreadsheet.lastRunAt,
+      loadedCount: spreadsheet.loadedCount || 0,
+      newBarcodesFound: Array.isArray(spreadsheet.spreadsheetDelta?.newBarcodes)
+        ? spreadsheet.spreadsheetDelta.newBarcodes.length
+        : 0,
+      autoImportQueued: Number(spreadsheet.autoImport?.queued || 0),
+      pendingAutoImports: Number(spreadsheet.pendingAutoImports || 0)
+    },
+    review: {
+      waiting: missingSpreadsheetMatches.length,
+      seenToday: missingToday
+    },
+    inventory: {
+      lastRunAt: lastInventorySync.lastRunAt,
+      matched: Number(lastInventorySync.summary?.matched || 0),
+      updated: Number(lastInventorySync.summary?.updated || 0),
+      failed: Number(lastInventorySync.summary?.failed || 0)
+    },
+    maintenance: {
+      ranToday: maintenanceRunCount,
+      active: Object.values(maintenance).filter(job => job.running).length
+    }
   };
 }
 
@@ -3001,7 +3062,8 @@ app.get("/sync-status",(req,res)=>{
       running: inventorySyncRunning,
       queued: inventorySyncQueued
     },
-    spreadsheet: getSpreadsheetRefreshSnapshot()
+    spreadsheet: getSpreadsheetRefreshSnapshot(),
+    digest: getDailyDigestSnapshot()
   });
 });
 

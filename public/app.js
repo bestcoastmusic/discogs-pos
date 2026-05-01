@@ -378,6 +378,57 @@ function renderSpreadsheetStatus(spreadsheet = {}){
   `;
 }
 
+function renderDailyDigest(digest = {}){
+  const box = document.getElementById("dailyDigest");
+  if (!box) return;
+
+  const imports = digest.imports || {};
+  const spreadsheet = digest.spreadsheet || {};
+  const review = digest.review || {};
+  const inventory = digest.inventory || {};
+  const maintenance = digest.maintenance || {};
+
+  box.innerHTML = `
+    <div class="status-card">
+      <div class="status-badges">
+        <span class="status-pill good">Imported ${Number(imports.total || 0)}</span>
+        <span class="status-pill">Created ${Number(imports.created || 0)}</span>
+        <span class="status-pill">Updated ${Number(imports.updated || 0)}</span>
+      </div>
+      <div class="status-stack" style="margin-top:14px;">
+        <div class="status-row">
+          <span class="status-label">Sheet Check</span>
+          <span class="status-value">${formatTimestamp(spreadsheet.lastCheckedAt)}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">New UPCs Found</span>
+          <span class="status-value">${Number(spreadsheet.newBarcodesFound || 0)}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Auto-Queued</span>
+          <span class="status-value">${Number(spreadsheet.autoImportQueued || 0)}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Pending Auto-Imports</span>
+          <span class="status-value">${Number(spreadsheet.pendingAutoImports || 0)}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Inventory Updated</span>
+          <span class="status-value">${Number(inventory.updated || 0)} of ${Number(inventory.matched || 0)}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Review Items</span>
+          <span class="status-value">${Number(review.waiting || 0)} waiting</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Admin Jobs Today</span>
+          <span class="status-value">${Number(maintenance.ranToday || 0)}</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderImportStatus(importState = {}){
   const box = document.getElementById("importStatus");
   if (!box) return;
@@ -690,6 +741,7 @@ async function loadSyncStatus(){
     const data = await res.json();
     renderSyncStatus(data.sync || {});
     renderSpreadsheetStatus(data.spreadsheet || {});
+    renderDailyDigest(data.digest || {});
   } catch {
     renderSyncStatus({
       error: "Could not load sync status"
@@ -697,6 +749,7 @@ async function loadSyncStatus(){
     renderSpreadsheetStatus({
       error: "Could not load spreadsheet status"
     });
+    renderDailyDigest({});
   }
 }
 
