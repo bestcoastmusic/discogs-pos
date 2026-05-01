@@ -22,6 +22,7 @@ let manualOverrides = {};
 let missingSpreadsheetMatches = [];
 let maintenanceJobs = createDefaultMaintenanceJobs();
 let spreadsheetState = createDefaultSpreadsheetState();
+let barcodeAudit = createEmptyBarcodeAudit();
 let lastInventorySync = {
   running: false,
   queued: false,
@@ -367,6 +368,29 @@ function createDefaultSpreadsheetState(){
     lastSeenAt: null
   };
 }
+
+// Barcode audit feature start
+function createEmptyBarcodeAudit(){
+  return {
+    running: false,
+    startedAt: null,
+    finishedAt: null,
+    lastRunAt: null,
+    totalProducts: 0,
+    withBarcode: 0,
+    missingBarcode: 0,
+    items: [],
+    error: null
+  };
+}
+
+function getBarcodeAuditSnapshot(){
+  return {
+    ...barcodeAudit,
+    items: Array.isArray(barcodeAudit.items) ? barcodeAudit.items : []
+  };
+}
+// Barcode audit feature end
 
 function getTitleBackfillStatusSnapshot(){
   return {
@@ -2320,6 +2344,132 @@ async function fetchShopifyInventoryItem(inventoryItemId){
   return res.data.inventory_item;
 }
 
+// Barcode audit feature start
+async function fetchShopifyProductSummariesByIds(productIds){
+  const ids = [...new Set((productIds || []).map(id => Number(id || 0)).filter(Boolean))];
+  if (!ids.length) return [];
+
+  const products = [];
+
+  for (let i = 0; i < ids.length; i += 250){
+    const batch = ids.slice(i, i + 250);
+    const params = new URLSearchParams({
+      ids: batch.join(","),
+      limit: String(batch.length),
+      fields: "id,title,handle"
+    });
+    const res = await shopifyRequest(`/products.json?${params.toString()}`);
+    if (!res.ok){
+      throw new Error(`Shopify product summaries fetch failed (${res.status})`);
+    }
+
+    products.push(...(res.data.products || []));
+
+    if (i + 250 < ids.length){
+      await sleep(SHOPIFY_REQUEST_DELAY_MS);
+    }
+  }
+
+  return products;
+}
+
+function getShopifyAdminProductUrl(productId){
+  const store = String(process.env.SHOPIFY_STORE || "").trim();
+  const cleanProductId = Number(productId || 0);
+  if (!store || !cleanProductId) return null;
+  return `https://${store}/admin/products/${cleanProductId}`;
+}
+
+async function runBarcodeAudit(){
+  if (barcodeAudit.running){
+    return getBarcodeAuditSnapshot();
+  }
+
+  barcodeAudit = {
+    ...createEmptyBarcodeAudit(),
+    running: true,
+    startedAt: new Date().toISOString(),
+    lastRunAt: new Date().toISOString()
+  };
+
+  try {
+    const variants = await getCachedShopifyVariants(true);
+    const productsById = new Map();
+
+    for (const variant of variants){
+      const productId = Number(variant.product_id || 0);
+      if (!productId) continue;
+
+      const barcode = getVariantBarcode(variant);
+      const sku = String(variant.sku || "").trim();
+      const current = productsById.get(productId) || {
+        productId,
+        variantCount: 0,
+        variantIds: [],
+        hasBarcode: false,
+        sampleBarcode: "",
+        sampleSku: ""
+      };
+
+      current.variantCount += 1;
+      current.variantIds.push(Number(variant.id || 0));
+
+      if (barcode && !current.sampleBarcode){
+        current.sampleBarcode = barcode;
+      }
+      if (sku && !current.sampleSku){
+        current.sampleSku = sku;
+      }
+      if (barcode){
+        current.hasBarcode = true;
+      }
+
+      productsById.set(productId, current);
+    }
+
+    const products = [...productsById.values()].sort((a, b) => a.productId - b.productId);
+    const missingEntries = products.filter(item => !item.hasBarcode);
+    const summaries = await fetchShopifyProductSummariesByIds(missingEntries.map(item => item.productId));
+    const summaryMap = new Map(
+      summaries.map(product => [Number(product.id || 0), product])
+    );
+
+    barcodeAudit = {
+      ...barcodeAudit,
+      running: false,
+      finishedAt: new Date().toISOString(),
+      totalProducts: products.length,
+      withBarcode: products.length - missingEntries.length,
+      missingBarcode: missingEntries.length,
+      error: null,
+      items: missingEntries.map(item => {
+        const product = summaryMap.get(item.productId) || {};
+        return {
+          productId: item.productId,
+          title: product.title || `Product ${item.productId}`,
+          handle: product.handle || "",
+          sampleSku: item.sampleSku || "",
+          sampleBarcode: item.sampleBarcode || "",
+          variantCount: item.variantCount,
+          variantIds: item.variantIds,
+          adminUrl: getShopifyAdminProductUrl(item.productId)
+        };
+      })
+    };
+  } catch (err){
+    barcodeAudit = {
+      ...barcodeAudit,
+      running: false,
+      finishedAt: new Date().toISOString(),
+      error: err.message
+    };
+    console.log("❌ BARCODE AUDIT FAILED:", err.message);
+  }
+
+  return getBarcodeAuditSnapshot();
+}
+// Barcode audit feature end
+
 async function updateShopifyProductTitle(productId, title){
   const res = await shopifyRequest(`/products/${productId}.json`, {
     method: "PUT",
@@ -3647,6 +3797,22 @@ app.get("/maintenance-status",(req,res)=>{
     maintenance: getMaintenanceStatusSnapshot()
   });
 });
+
+// Barcode audit feature start
+app.get("/barcode-audit",(req,res)=>{
+  res.json({
+    audit: getBarcodeAuditSnapshot()
+  });
+});
+
+app.post("/barcode-audit/run", async (req,res)=>{
+  const audit = await runBarcodeAudit();
+  res.json({
+    success: true,
+    audit
+  });
+});
+// Barcode audit feature end
 
 app.post("/maintenance/:jobKey/run", async (req,res)=>{
   const jobKey = String(req.params.jobKey || "");

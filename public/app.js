@@ -23,6 +23,7 @@ window.onload = function(){
   document.getElementById("bulkBtn").onclick = startBulk;
   document.getElementById("cameraBtn").onclick = startCamera;
   document.getElementById("syncNowBtn").onclick = runInventorySync;
+  document.getElementById("runBarcodeAuditBtn").onclick = runBarcodeAudit;
   setupSidebarView();
   document.getElementById("barcode").addEventListener("keydown", event => {
     if (event.key === "Enter") scan();
@@ -39,6 +40,7 @@ window.onload = function(){
   loadImportStatus();
   loadMissingMatches();
   loadMaintenanceStatus();
+  loadBarcodeAudit();
   setInterval(loadHistory, 2000);
   setInterval(loadSyncStatus, 5000);
   setInterval(loadImportStatus, 1500);
@@ -868,6 +870,166 @@ function renderMaintenanceStatus(maintenance = {}){
     box.appendChild(card);
   });
 }
+
+// Barcode audit UI start
+function renderBarcodeAudit(audit = {}){
+  const box = document.getElementById("barcodeAudit");
+  const button = document.getElementById("runBarcodeAuditBtn");
+  if (!box) return;
+
+  if (button){
+    button.disabled = Boolean(audit.running);
+    button.textContent = audit.running ? "Running Audit..." : "Run Audit";
+  }
+
+  box.innerHTML = "";
+
+  const totalProducts = Number(audit.totalProducts || 0);
+  const missingBarcode = Number(audit.missingBarcode || 0);
+  const withBarcode = Number(audit.withBarcode || 0);
+  const items = Array.isArray(audit.items) ? audit.items : [];
+
+  if (!audit.running && !audit.lastRunAt && !totalProducts && !items.length && !audit.error){
+    renderEmptyState(
+      box,
+      "No barcode audit yet",
+      "Run the audit once and this panel will list every Shopify product still missing a barcode."
+    );
+    return;
+  }
+
+  const summary = document.createElement("div");
+  summary.className = "status-card";
+  summary.innerHTML = `
+    <div class="status-badges">
+      <span class="status-pill ${audit.running ? "warn" : "good"}">${audit.running ? "Running" : "Ready"}</span>
+      <span class="status-pill">${missingBarcode} missing</span>
+      <span class="status-pill">${withBarcode} with barcode</span>
+    </div>
+    <div class="status-stack" style="margin-top:14px;">
+      <div class="status-row">
+        <span class="status-label">Total Products</span>
+        <span class="status-value">${totalProducts}</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Missing Barcode</span>
+        <span class="status-value">${missingBarcode}</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">With Barcode</span>
+        <span class="status-value">${withBarcode}</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Last Run</span>
+        <span class="status-value">${formatTimestamp(audit.lastRunAt)}</span>
+      </div>
+      ${audit.error ? `<p class="muted-note">Last error: ${audit.error}</p>` : ""}
+      <p class="muted-note">Products listed below are the ones most likely to fail description backfill until a barcode is added in Shopify.</p>
+    </div>
+  `;
+  box.appendChild(summary);
+
+  if (!items.length && !audit.running){
+    const clean = document.createElement("div");
+    clean.className = "empty-state";
+    clean.innerHTML = `
+      <h3>No missing barcodes found</h3>
+      <p class="section-copy">Everything in Shopify currently has a barcode or SKU the app can use.</p>
+    `;
+    box.appendChild(clean);
+    return;
+  }
+
+  if (!items.length){
+    return;
+  }
+
+  const list = document.createElement("div");
+  list.className = "history-list";
+  list.style.marginTop = "14px";
+
+  items.forEach(item => {
+    const row = document.createElement("div");
+    row.className = "history-item";
+
+    const title = document.createElement("h3");
+    title.className = "history-title";
+    title.textContent = item.title || `Product ${item.productId}`;
+
+    const meta = document.createElement("p");
+    meta.className = "history-meta";
+    meta.textContent = [
+      `Product ${item.productId}`,
+      item.sampleSku ? `SKU ${item.sampleSku}` : "No SKU",
+      `${Number(item.variantCount || 0)} variant${Number(item.variantCount || 0) === 1 ? "" : "s"}`
+    ].filter(Boolean).join(" • ");
+
+    row.appendChild(title);
+    row.appendChild(meta);
+
+    if (item.adminUrl){
+      const actions = document.createElement("div");
+      actions.className = "result-actions-inline";
+      actions.style.marginTop = "12px";
+
+      const link = document.createElement("a");
+      link.className = "ghost-btn";
+      link.href = item.adminUrl;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.textContent = "Open In Shopify";
+      link.style.display = "inline-flex";
+      link.style.alignItems = "center";
+      link.style.textDecoration = "none";
+
+      actions.appendChild(link);
+      row.appendChild(actions);
+    }
+
+    list.appendChild(row);
+  });
+
+  box.appendChild(list);
+}
+
+async function loadBarcodeAudit(){
+  try {
+    const res = await fetch("/barcode-audit");
+    const data = await res.json();
+    renderBarcodeAudit(data.audit || {});
+  } catch {
+    renderBarcodeAudit({
+      error: "Could not load barcode audit"
+    });
+  }
+}
+
+async function runBarcodeAudit(){
+  const button = document.getElementById("runBarcodeAuditBtn");
+  if (button){
+    button.disabled = true;
+    button.textContent = "Running Audit...";
+  }
+
+  try {
+    const res = await fetch("/barcode-audit/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" }
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false){
+      alert(data.error || "Could not run barcode audit");
+      await loadBarcodeAudit();
+      return;
+    }
+
+    renderBarcodeAudit(data.audit || {});
+  } catch {
+    alert("Could not run barcode audit");
+    await loadBarcodeAudit();
+  }
+}
+// Barcode audit UI end
 
 async function clearMissingMatches(barcode){
   await fetch("/missing-matches/clear", {
