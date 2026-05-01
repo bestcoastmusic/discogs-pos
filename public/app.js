@@ -1698,6 +1698,10 @@ function renderCard(options, container){
   async function submitItem(){
     const item = buildBulkImportItem(entry);
     if (!item) return;
+    if (!item.barcode){
+      alert("This release does not have a usable barcode yet. Open Edit Details and add the barcode before importing.");
+      return;
+    }
 
     await fetch("/import", {
       method: "POST",
@@ -2355,6 +2359,10 @@ function renderBulkCard(entry, container){
   async function submitItem(){
     const item = buildBulkImportItem(entry);
     if (!item) return;
+    if (!item.barcode){
+      alert("This release does not have a usable barcode yet. Open Edit Details and add the barcode before importing.");
+      return;
+    }
 
     await fetch("/import", {
       method: "POST",

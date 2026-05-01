@@ -976,6 +976,49 @@ function buildIdentifierSummary(release){
   return parts[0] || "";
 }
 
+function extractDiscogsBarcode(release){
+  const identifiers = Array.isArray(release?.identifiers) ? release.identifiers : [];
+  const ranked = [];
+
+  const pushCandidate = (rawValue, priority, sourceLabel) => {
+    const clean = normalizeBarcode(rawValue);
+    if (!clean) return;
+    if (clean.length < 8 || clean.length > 14) return;
+    ranked.push({
+      clean,
+      priority,
+      sourceLabel
+    });
+  };
+
+  if (release?.barcode){
+    pushCandidate(release.barcode, 0, "release.barcode");
+  }
+
+  identifiers.forEach((identifier, index) => {
+    const type = String(identifier?.type || "").trim();
+    const description = String(identifier?.description || "").trim();
+    const value = String(identifier?.value || "").trim();
+    const tag = `${type} ${description}`.toLowerCase();
+
+    if (!value) return;
+
+    if (tag.includes("barcode") || tag.includes("upc") || tag.includes("ean")){
+      pushCandidate(value, 0, `identifier:${index}`);
+      return;
+    }
+
+    if (/(matrix|runout|sid|rights society|label code|other)/i.test(tag)){
+      return;
+    }
+
+    pushCandidate(value, 2, `identifier:${index}`);
+  });
+
+  ranked.sort((a, b) => a.priority - b.priority);
+  return ranked[0]?.clean || "";
+}
+
 function buildPressingDetails(release, color, catalogNumber){
   const pieces = [];
   const colorLabel = titleCaseWords(color || "");
@@ -2036,9 +2079,7 @@ async function fetchRelease(id, barcode){
   const label = r.labels?.[0]?.name || "";
   const catalogNumber = buildCatalogNumber(r);
   const format = formatDiscogsFormat(r.formats);
-  const releaseBarcode = normalizeBarcode(
-    r.identifiers?.find(i => String(i.type || "").toLowerCase().includes("barcode"))?.value
-  );
+  const releaseBarcode = extractDiscogsBarcode(r);
   const resolvedBarcode = normalizeBarcode(barcode) || releaseBarcode;
   const match = findMatch(resolvedBarcode);
   const manualOverride = !match ? getManualOverrideRecord(resolvedBarcode) : null;
@@ -2101,6 +2142,7 @@ async function fetchRelease(id, barcode){
     reviewFlags: {
       fallbackBlack: finalColor === "black" && spreadsheetColor !== "black" && discogsColor !== "black",
       explicitBlack: finalColor === "black" && (spreadsheetColor === "black" || discogsColor === "black"),
+      missingBarcode: !resolvedBarcode,
       barcodeMismatch: false,
       similarOptions: false
     },
@@ -2173,6 +2215,10 @@ async function decorateReleaseOptions(options, requestedBarcode = ""){
 
     if (option.reviewFlags?.fallbackBlack){
       reviewReasons.push("Color fell back to black, so the pressing color may need a quick manual check.");
+    }
+
+    if (option.reviewFlags?.missingBarcode){
+      reviewReasons.push("Discogs did not expose a usable barcode for this release. Add one manually before importing.");
     }
 
     if (similarOptions){
