@@ -16,12 +16,14 @@ const GENRE_OPTIONS = [
   "Classical",
   "Metal"
 ];
+const SIDEBAR_VIEW_STORAGE_KEY = "bcm_sidebar_view";
 
 window.onload = function(){
   document.getElementById("scanBtn").onclick = scan;
   document.getElementById("bulkBtn").onclick = startBulk;
   document.getElementById("cameraBtn").onclick = startCamera;
   document.getElementById("syncNowBtn").onclick = runInventorySync;
+  setupSidebarView();
   document.getElementById("barcode").addEventListener("keydown", event => {
     if (event.key === "Enter") scan();
   });
@@ -43,6 +45,41 @@ window.onload = function(){
   setInterval(loadMissingMatches, 5000);
   setInterval(loadMaintenanceStatus, 5000);
 };
+
+function applySidebarView(view){
+  const activeView = ["import", "review", "admin", "all"].includes(view) ? view : "import";
+  const select = document.getElementById("sidebarView");
+  if (select && select.value !== activeView){
+    select.value = activeView;
+  }
+
+  document.querySelectorAll("[data-sidebar-group]").forEach(section => {
+    const groups = String(section.getAttribute("data-sidebar-group") || "")
+      .split(",")
+      .map(value => value.trim())
+      .filter(Boolean);
+
+    const visible = activeView === "all" || groups.includes(activeView);
+    section.classList.toggle("sidebar-hidden", !visible);
+  });
+
+  try {
+    localStorage.setItem(SIDEBAR_VIEW_STORAGE_KEY, activeView);
+  } catch {}
+}
+
+function setupSidebarView(){
+  const select = document.getElementById("sidebarView");
+  if (!select) return;
+
+  let savedView = "import";
+  try {
+    savedView = localStorage.getItem(SIDEBAR_VIEW_STORAGE_KEY) || "import";
+  } catch {}
+
+  applySidebarView(savedView);
+  select.onchange = () => applySidebarView(select.value);
+}
 
 function formatMoney(value){
   const amount = Number(value || 0);
