@@ -3,6 +3,7 @@ console.log("POS FINAL STABLE");
 let bulkItems = [];
 let bulkRenderedCount = 0;
 let stream;
+const barcodeRepairState = {};
 const GENRE_OPTIONS = [
   "Rock",
   "Jazz",
@@ -949,6 +950,12 @@ function renderBarcodeAudit(audit = {}){
   list.style.marginTop = "14px";
 
   items.forEach(item => {
+    const state = barcodeRepairState[item.productId] || {
+      input: "",
+      loading: false,
+      suggestions: [],
+      error: ""
+    };
     const row = document.createElement("div");
     row.className = "history-item";
 
@@ -967,11 +974,11 @@ function renderBarcodeAudit(audit = {}){
     row.appendChild(title);
     row.appendChild(meta);
 
-    if (item.adminUrl){
-      const actions = document.createElement("div");
-      actions.className = "result-actions-inline";
-      actions.style.marginTop = "12px";
+    const actions = document.createElement("div");
+    actions.className = "result-actions-inline";
+    actions.style.marginTop = "12px";
 
+    if (item.adminUrl){
       const link = document.createElement("a");
       link.className = "ghost-btn";
       link.href = item.adminUrl;
@@ -981,10 +988,137 @@ function renderBarcodeAudit(audit = {}){
       link.style.display = "inline-flex";
       link.style.alignItems = "center";
       link.style.textDecoration = "none";
-
       actions.appendChild(link);
-      row.appendChild(actions);
     }
+
+    if (Number(item.variantCount || 0) === 1){
+      const suggestBtn = document.createElement("button");
+      suggestBtn.className = "secondary-btn";
+      suggestBtn.textContent = state.loading ? "Finding..." : "Find Discogs Matches";
+      suggestBtn.disabled = Boolean(state.loading);
+      suggestBtn.onclick = async () => {
+        await suggestBarcodeRepair(item.productId);
+      };
+      actions.appendChild(suggestBtn);
+    }
+
+    row.appendChild(actions);
+
+    if (Number(item.variantCount || 0) !== 1){
+      const note = document.createElement("p");
+      note.className = "muted-note";
+      note.style.marginTop = "10px";
+      note.textContent = "This product has multiple variants, so the safest path is updating the right variant directly in Shopify.";
+      row.appendChild(note);
+      list.appendChild(row);
+      return;
+    }
+
+    const repairPanel = document.createElement("div");
+    repairPanel.className = "status-card";
+    repairPanel.style.marginTop = "12px";
+
+    const repairLabel = document.createElement("div");
+    repairLabel.className = "status-label";
+    repairLabel.textContent = "Repair Barcode";
+    repairPanel.appendChild(repairLabel);
+
+    const repairCopy = document.createElement("p");
+    repairCopy.className = "section-copy";
+    repairCopy.style.marginTop = "6px";
+    repairCopy.textContent = "Paste a barcode or Discogs release ID, or use the Discogs match helper below.";
+    repairPanel.appendChild(repairCopy);
+
+    const inputRow = document.createElement("div");
+    inputRow.className = "controls-grid";
+    inputRow.style.marginTop = "12px";
+
+    const input = document.createElement("input");
+    input.className = "control-input";
+    input.placeholder = "Paste barcode or Discogs release ID";
+    input.value = state.input || "";
+    input.oninput = () => {
+      barcodeRepairState[item.productId] = {
+        ...state,
+        input: input.value
+      };
+    };
+
+    const applyBtn = document.createElement("button");
+    applyBtn.className = "primary-btn";
+    applyBtn.textContent = state.loading ? "Saving..." : "Apply To Shopify";
+    applyBtn.disabled = Boolean(state.loading);
+    applyBtn.onclick = async () => {
+      await applyBarcodeRepair(item.productId);
+    };
+
+    inputRow.appendChild(input);
+    inputRow.appendChild(applyBtn);
+    repairPanel.appendChild(inputRow);
+
+    if (state.error){
+      const error = document.createElement("p");
+      error.className = "muted-note";
+      error.style.marginTop = "10px";
+      error.textContent = state.error;
+      repairPanel.appendChild(error);
+    }
+
+    if (Array.isArray(state.suggestions) && state.suggestions.length){
+      const suggestionWrap = document.createElement("div");
+      suggestionWrap.className = "status-stack";
+      suggestionWrap.style.marginTop = "12px";
+
+      const suggestionLabel = document.createElement("div");
+      suggestionLabel.className = "status-label";
+      suggestionLabel.textContent = "Suggested Discogs Matches";
+      suggestionWrap.appendChild(suggestionLabel);
+
+      state.suggestions.forEach(option => {
+        const suggestion = document.createElement("div");
+        suggestion.className = "history-item";
+
+        const suggestionTitle = document.createElement("h3");
+        suggestionTitle.className = "history-title";
+        suggestionTitle.textContent = option.title || "Discogs release";
+
+        const suggestionMeta = document.createElement("p");
+        suggestionMeta.className = "history-meta";
+        suggestionMeta.textContent = [
+          option.year || "Unknown year",
+          option.country || "Unknown country",
+          option.format || "Vinyl",
+          option.barcode ? `UPC ${option.barcode}` : "No barcode"
+        ].filter(Boolean).join(" • ");
+
+        const suggestionActions = document.createElement("div");
+        suggestionActions.className = "result-actions-inline";
+        suggestionActions.style.marginTop = "12px";
+
+        const useBtn = document.createElement("button");
+        useBtn.className = "ghost-btn";
+        useBtn.textContent = "Use This Barcode";
+        useBtn.disabled = Boolean(state.loading) || !option.barcode;
+        useBtn.onclick = async () => {
+          barcodeRepairState[item.productId] = {
+            ...barcodeRepairState[item.productId],
+            input: option.barcode || "",
+            error: ""
+          };
+          await applyBarcodeRepair(item.productId, option.barcode || "");
+        };
+
+        suggestionActions.appendChild(useBtn);
+        suggestion.appendChild(suggestionTitle);
+        suggestion.appendChild(suggestionMeta);
+        suggestion.appendChild(suggestionActions);
+        suggestionWrap.appendChild(suggestion);
+      });
+
+      repairPanel.appendChild(suggestionWrap);
+    }
+
+    row.appendChild(repairPanel);
 
     list.appendChild(row);
   });
@@ -1026,6 +1160,109 @@ async function runBarcodeAudit(){
     renderBarcodeAudit(data.audit || {});
   } catch {
     alert("Could not run barcode audit");
+    await loadBarcodeAudit();
+  }
+}
+
+async function suggestBarcodeRepair(productId){
+  const current = barcodeRepairState[productId] || {
+    input: "",
+    suggestions: [],
+    error: ""
+  };
+  barcodeRepairState[productId] = {
+    ...current,
+    loading: true,
+    error: ""
+  };
+  renderBarcodeAudit((await fetch("/barcode-audit").then(res => res.json()).catch(() => ({ audit: {} }))).audit || {});
+
+  try {
+    const res = await fetch(`/barcode-audit/${productId}/suggest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" }
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false){
+      barcodeRepairState[productId] = {
+        ...current,
+        loading: false,
+        suggestions: [],
+        error: data.error || "Could not load Discogs suggestions"
+      };
+      await loadBarcodeAudit();
+      return;
+    }
+
+    barcodeRepairState[productId] = {
+      ...barcodeRepairState[productId],
+      loading: false,
+      suggestions: data.options || [],
+      error: data.options?.length ? "" : "No barcode-ready Discogs matches were found for this title."
+    };
+    await loadBarcodeAudit();
+  } catch {
+    barcodeRepairState[productId] = {
+      ...current,
+      loading: false,
+      suggestions: [],
+      error: "Could not load Discogs suggestions"
+    };
+    await loadBarcodeAudit();
+  }
+}
+
+async function applyBarcodeRepair(productId, overrideInput = ""){
+  const current = barcodeRepairState[productId] || {
+    input: "",
+    suggestions: [],
+    error: ""
+  };
+  const input = String(overrideInput || current.input || "").trim();
+  if (!input){
+    barcodeRepairState[productId] = {
+      ...current,
+      error: "Paste a barcode or Discogs release ID first."
+    };
+    await loadBarcodeAudit();
+    return;
+  }
+
+  barcodeRepairState[productId] = {
+    ...current,
+    input,
+    loading: true,
+    error: ""
+  };
+  await loadBarcodeAudit();
+
+  try {
+    const res = await fetch(`/barcode-audit/${productId}/apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false){
+      barcodeRepairState[productId] = {
+        ...current,
+        input,
+        loading: false,
+        error: data.error || "Could not apply barcode"
+      };
+      await loadBarcodeAudit();
+      return;
+    }
+
+    delete barcodeRepairState[productId];
+    renderBarcodeAudit(data.audit || {});
+  } catch {
+    barcodeRepairState[productId] = {
+      ...current,
+      input,
+      loading: false,
+      error: "Could not apply barcode"
+    };
     await loadBarcodeAudit();
   }
 }

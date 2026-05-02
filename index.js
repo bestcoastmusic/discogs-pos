@@ -1651,6 +1651,65 @@ async function searchDiscogsByBarcode(barcode){
   return (data.results || []).slice(0, 5);
 }
 
+// Barcode repair feature start
+function stripShopifyTitleSuffix(title){
+  return String(title || "")
+    .replace(/\s*\[[^\]]+\]\s*$/g, "")
+    .trim();
+}
+
+function parseShopifyTitleForDiscogsSearch(title){
+  const cleanTitle = stripShopifyTitleSuffix(title);
+  const parts = cleanTitle.split(/\s+-\s+/).map(value => value.trim()).filter(Boolean);
+
+  if (parts.length >= 2){
+    return {
+      artist: parts.shift() || "",
+      releaseTitle: parts.join(" - "),
+      query: cleanTitle
+    };
+  }
+
+  return {
+    artist: "",
+    releaseTitle: cleanTitle,
+    query: cleanTitle
+  };
+}
+
+async function searchDiscogsByTitle(title){
+  const parsed = parseShopifyTitleForDiscogsSearch(title);
+  const params = new URLSearchParams({
+    token: process.env.DISCOGS_TOKEN,
+    type: "release",
+    format: "Vinyl"
+  });
+
+  if (parsed.artist && parsed.releaseTitle){
+    params.set("artist", parsed.artist);
+    params.set("release_title", parsed.releaseTitle);
+  } else if (parsed.query){
+    params.set("q", parsed.query);
+  } else {
+    return [];
+  }
+
+  const data = await safeFetch(
+    `https://api.discogs.com/database/search?${params.toString()}`
+  );
+
+  if (data.__failed){
+    throw new Error(
+      data.__status === 429
+        ? "Discogs is rate-limiting repair lookups right now. Please retry in a moment."
+        : `Discogs title search failed: ${data.message}`
+    );
+  }
+
+  return (data.results || []).slice(0, 5);
+}
+// Barcode repair feature end
+
 function parseDiscogsLookupInput(input){
   const raw = String(input || "").trim();
   if (!raw){
@@ -2379,6 +2438,53 @@ function getShopifyAdminProductUrl(productId){
   if (!store || !cleanProductId) return null;
   return `https://${store}/admin/products/${cleanProductId}`;
 }
+
+// Barcode repair feature start
+function findBarcodeAuditItem(productId){
+  const cleanProductId = Number(productId || 0);
+  return (barcodeAudit.items || []).find(item => Number(item.productId || 0) === cleanProductId) || null;
+}
+
+async function buildBarcodeRepairOptions(productTitle){
+  const rawResults = await searchDiscogsByTitle(productTitle);
+  const prioritizedResults = sortResultsByCountryPreference(rawResults);
+  const options = [];
+
+  for (const result of prioritizedResults){
+    const full = await fetchRelease(result.id, "");
+    if (full?.barcode){
+      options.push(full);
+    }
+  }
+
+  return await decorateReleaseOptions(options, "");
+}
+
+async function updateShopifyVariantBarcode(variantId, barcode){
+  const cleanBarcode = normalizeBarcode(barcode);
+  if (!cleanBarcode){
+    throw new Error("No usable barcode was provided");
+  }
+
+  const res = await shopifyRequest(`/variants/${variantId}.json`, {
+    method: "PUT",
+    body: JSON.stringify({
+      variant: {
+        id: variantId,
+        barcode: cleanBarcode,
+        sku: cleanBarcode
+      }
+    })
+  });
+
+  if (!res.ok || !res.data?.variant){
+    throw new Error(`Shopify variant barcode update failed (${res.status})`);
+  }
+
+  upsertVariantInCache(res.data.variant);
+  return res.data.variant;
+}
+// Barcode repair feature end
 
 async function runBarcodeAudit(){
   if (barcodeAudit.running){
@@ -3811,6 +3917,88 @@ app.post("/barcode-audit/run", async (req,res)=>{
     success: true,
     audit
   });
+});
+
+app.post("/barcode-audit/:productId/suggest", async (req,res)=>{
+  const productId = Number(req.params.productId || 0);
+  const auditItem = findBarcodeAuditItem(productId);
+  if (!auditItem){
+    return res.status(404).json({
+      success: false,
+      error: "Product is not in the current missing-barcode audit list"
+    });
+  }
+
+  try {
+    const options = await buildBarcodeRepairOptions(auditItem.title);
+    res.json({
+      success: true,
+      options,
+      product: {
+        productId: auditItem.productId,
+        title: auditItem.title,
+        variantCount: auditItem.variantCount
+      }
+    });
+  } catch (err){
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+app.post("/barcode-audit/:productId/apply", async (req,res)=>{
+  const productId = Number(req.params.productId || 0);
+  const auditItem = findBarcodeAuditItem(productId);
+  if (!auditItem){
+    return res.status(404).json({
+      success: false,
+      error: "Product is not in the current missing-barcode audit list"
+    });
+  }
+
+  if (Number(auditItem.variantCount || 0) !== 1 || !auditItem.variantIds?.[0]){
+    return res.status(400).json({
+      success: false,
+      error: "This product has multiple variants. Open it in Shopify and set the correct barcode there."
+    });
+  }
+
+  try {
+    const rawInput = String(req.body?.input || req.body?.barcode || req.body?.releaseId || "").trim();
+    let barcode = normalizeBarcode(rawInput);
+
+    if (!barcode){
+      const lookup = parseDiscogsLookupInput(rawInput);
+      if (lookup.kind === "release_id"){
+        const release = await fetchRelease(lookup.value, "");
+        barcode = normalizeBarcode(release?.barcode);
+      }
+    }
+
+    if (!barcode){
+      return res.status(400).json({
+        success: false,
+        error: "Could not find a usable barcode from that input"
+      });
+    }
+
+    const variant = await updateShopifyVariantBarcode(auditItem.variantIds[0], barcode);
+    await runBarcodeAudit();
+
+    res.json({
+      success: true,
+      barcode,
+      variant: pickVariantCacheFields(variant),
+      audit: getBarcodeAuditSnapshot()
+    });
+  } catch (err){
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
 });
 // Barcode audit feature end
 
