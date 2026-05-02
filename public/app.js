@@ -786,6 +786,12 @@ function renderMaintenanceStatus(maintenance = {}){
           <span class="status-label">Updated</span>
           <span class="status-value">${job.updated || 0}</span>
         </div>
+        ${Number(job.doneCount || 0) ? `
+        <div class="status-row">
+          <span class="status-label">Already Saved</span>
+          <span class="status-value">${job.doneCount || 0}</span>
+        </div>
+        ` : ""}
         <div class="status-row">
           <span class="status-label">Unchanged</span>
           <span class="status-value">${job.unchanged || 0}</span>

@@ -348,7 +348,8 @@ function createEmptyMaintenanceJob(label){
     lastProductId: null,
     complete: false,
     error: null,
-    recentFailures: []
+    recentFailures: [],
+    doneProductIds: []
   };
 }
 
@@ -457,7 +458,8 @@ function getMaintenanceJobSnapshot(job){
     ...job,
     processed,
     remaining,
-    percent: total ? Math.round((processed / total) * 100) : 0
+    percent: total ? Math.round((processed / total) * 100) : 0,
+    doneCount: Array.isArray(job?.doneProductIds) ? job.doneProductIds.length : 0
   };
 }
 
@@ -577,6 +579,14 @@ function mergeMaintenanceJobState(source, fallback){
   };
 }
 
+function normalizeMaintenanceDoneProductIds(value){
+  return [...new Set(
+    (Array.isArray(value) ? value : [])
+      .map(id => Number(id || 0))
+      .filter(Boolean)
+  )].sort((a, b) => a - b);
+}
+
 function loadMaintenanceJobsFromDisk(){
   const defaults = createDefaultMaintenanceJobs();
   const parsed = loadJsonFile(MAINTENANCE_JOBS_FILE, {});
@@ -586,25 +596,29 @@ function loadMaintenanceJobsFromDisk(){
       ...mergeMaintenanceJobState(parsed?.titles, defaults.titles),
       running: false,
       currentTitle: null,
-      currentBarcode: null
+      currentBarcode: null,
+      doneProductIds: normalizeMaintenanceDoneProductIds(parsed?.titles?.doneProductIds)
     },
     descriptions: {
       ...mergeMaintenanceJobState(parsed?.descriptions, defaults.descriptions),
       running: false,
       currentTitle: null,
-      currentBarcode: null
+      currentBarcode: null,
+      doneProductIds: normalizeMaintenanceDoneProductIds(parsed?.descriptions?.doneProductIds)
     },
     tags: {
       ...mergeMaintenanceJobState(parsed?.tags, defaults.tags),
       running: false,
       currentTitle: null,
-      currentBarcode: null
+      currentBarcode: null,
+      doneProductIds: normalizeMaintenanceDoneProductIds(parsed?.tags?.doneProductIds)
     },
     standards: {
       ...mergeMaintenanceJobState(parsed?.standards, defaults.standards),
       running: false,
       currentTitle: null,
-      currentBarcode: null
+      currentBarcode: null,
+      doneProductIds: normalizeMaintenanceDoneProductIds(parsed?.standards?.doneProductIds)
     }
   };
 }
@@ -2920,6 +2934,24 @@ function updateMaintenanceJob(jobKey, changes){
   persistMaintenanceJobs();
 }
 
+function getMaintenanceDoneProductIdSet(jobKey){
+  return new Set(normalizeMaintenanceDoneProductIds(maintenanceJobs[jobKey]?.doneProductIds));
+}
+
+function markMaintenanceJobDone(jobKey, productId){
+  const cleanProductId = Number(productId || 0);
+  if (!cleanProductId) return;
+
+  const nextIds = normalizeMaintenanceDoneProductIds([
+    ...(maintenanceJobs[jobKey]?.doneProductIds || []),
+    cleanProductId
+  ]);
+
+  updateMaintenanceJob(jobKey, {
+    doneProductIds: nextIds
+  });
+}
+
 function recordMaintenanceFailure(jobKey, item, reason, titleOverride = null){
   const failure = {
     productId: Number(item?.productId || 0) || null,
@@ -2977,13 +3009,13 @@ async function processDescriptionMaintenanceItem(jobKey, item){
 
   if (!item.barcode){
     recordMaintenanceFailure(jobKey, item, "Missing Shopify barcode", currentProduct.title || null);
-    return;
+    return false;
   }
 
   const bestRelease = await findBestReleaseForBarcode(item.barcode);
   if (!bestRelease){
     recordMaintenanceFailure(jobKey, item, "No Discogs release found for this barcode", currentProduct.title || null);
-    return;
+    return false;
   }
 
   updateMaintenanceJob(jobKey, {
@@ -2999,15 +3031,18 @@ async function processDescriptionMaintenanceItem(jobKey, item){
     updateMaintenanceJob(jobKey, {
       unchanged: maintenanceJobs[jobKey].unchanged + 1
     });
-    return;
+    markMaintenanceJobDone(jobKey, item.productId);
+    return true;
   }
 
   await updateShopifyProductBodyHtml(item.productId, desiredBodyHtml);
   updateMaintenanceJob(jobKey, {
     updated: maintenanceJobs[jobKey].updated + 1
   });
+  markMaintenanceJobDone(jobKey, item.productId);
 
   console.log("✅ DESCRIPTION MAINTENANCE:", item.barcode, "->", bestRelease.title);
+  return true;
 }
 
 async function processTagMaintenanceItem(jobKey, item){
@@ -3170,17 +3205,38 @@ async function runMaintenanceChunk(jobKey){
       }
     }
 
-    const products = await buildMaintenanceProductList();
-    const lastProductId = Number(maintenanceJobs[jobKey].lastProductId || 0);
-    const startIndex = lastProductId
-      ? products.findIndex(item => item.productId > lastProductId)
-      : 0;
-    const normalizedStartIndex = startIndex === -1 ? products.length : startIndex;
-    const chunk = products.slice(normalizedStartIndex, normalizedStartIndex + MAINTENANCE_CHUNK_SIZE);
+    const allProducts = await buildMaintenanceProductList();
+    let products = allProducts;
+    let chunk = [];
+    let descriptionSettledThisRun = 0;
 
-    updateMaintenanceJob(jobKey, {
-      total: products.length
-    });
+    if (jobKey === "descriptions"){
+      const doneProductIds = getMaintenanceDoneProductIdSet(jobKey);
+      products = allProducts.filter(item => !doneProductIds.has(Number(item.productId || 0)));
+      chunk = products.slice(0, MAINTENANCE_CHUNK_SIZE);
+
+      updateMaintenanceJob(jobKey, {
+        total: products.length,
+        processed: 0,
+        matched: 0,
+        updated: 0,
+        unchanged: 0,
+        failed: 0,
+        lastProductId: null,
+        recentFailures: []
+      });
+    } else {
+      const lastProductId = Number(maintenanceJobs[jobKey].lastProductId || 0);
+      const startIndex = lastProductId
+        ? products.findIndex(item => item.productId > lastProductId)
+        : 0;
+      const normalizedStartIndex = startIndex === -1 ? products.length : startIndex;
+      chunk = products.slice(normalizedStartIndex, normalizedStartIndex + MAINTENANCE_CHUNK_SIZE);
+
+      updateMaintenanceJob(jobKey, {
+        total: products.length
+      });
+    }
 
     if (!chunk.length){
       updateMaintenanceJob(jobKey, {
@@ -3203,7 +3259,10 @@ async function runMaintenanceChunk(jobKey){
         if (jobKey === "titles"){
           await processTitleMaintenanceItem(jobKey, item);
         } else if (jobKey === "descriptions"){
-          await processDescriptionMaintenanceItem(jobKey, item);
+          const settled = await processDescriptionMaintenanceItem(jobKey, item);
+          if (settled){
+            descriptionSettledThisRun += 1;
+          }
         } else if (jobKey === "tags"){
           await processTagMaintenanceItem(jobKey, item);
         } else if (jobKey === "standards"){
@@ -3214,15 +3273,22 @@ async function runMaintenanceChunk(jobKey){
         console.log(`❌ ${jobKey.toUpperCase()} MAINTENANCE ERROR:`, item.barcode || item.productId, err.message);
       }
 
-      updateMaintenanceJob(jobKey, {
-        processed: maintenanceJobs[jobKey].processed + 1,
-        lastProductId: item.productId
-      });
+      updateMaintenanceJob(jobKey, jobKey === "descriptions"
+        ? {
+            processed: descriptionSettledThisRun
+          }
+        : {
+            processed: maintenanceJobs[jobKey].processed + 1,
+            lastProductId: item.productId
+          }
+      );
 
       await sleep(SHOPIFY_REQUEST_DELAY_MS);
     }
 
-    const completed = maintenanceJobs[jobKey].processed >= products.length;
+    const completed = jobKey === "descriptions"
+      ? (products.length - descriptionSettledThisRun) <= 0
+      : maintenanceJobs[jobKey].processed >= products.length;
     updateMaintenanceJob(jobKey, {
       running: false,
       complete: completed,
