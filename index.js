@@ -23,6 +23,7 @@ let missingSpreadsheetMatches = [];
 let maintenanceJobs = createDefaultMaintenanceJobs();
 let spreadsheetState = createDefaultSpreadsheetState();
 let barcodeAudit = createEmptyBarcodeAudit();
+let barcodeAutoRepair = createEmptyBarcodeAutoRepair();
 let lastInventorySync = {
   running: false,
   queued: false,
@@ -370,6 +371,40 @@ function createDefaultSpreadsheetState(){
 }
 
 // Barcode audit feature start
+function createEmptyBarcodeAutoRepair(){
+  return {
+    running: false,
+    startedAt: null,
+    finishedAt: null,
+    lastRunAt: null,
+    total: 0,
+    processed: 0,
+    repaired: 0,
+    skipped: 0,
+    failed: 0,
+    currentTitle: null,
+    currentProductId: null,
+    error: null,
+    recentResults: []
+  };
+}
+
+function getBarcodeAutoRepairSnapshot(){
+  const processed = Number(barcodeAutoRepair.processed || 0);
+  const total = Number(barcodeAutoRepair.total || 0);
+  const remaining = Math.max(0, total - processed);
+
+  return {
+    ...barcodeAutoRepair,
+    processed,
+    remaining,
+    percent: total ? Math.round((processed / total) * 100) : 0,
+    recentResults: Array.isArray(barcodeAutoRepair.recentResults)
+      ? barcodeAutoRepair.recentResults
+      : []
+  };
+}
+
 function createEmptyBarcodeAudit(){
   return {
     running: false,
@@ -387,7 +422,8 @@ function createEmptyBarcodeAudit(){
 function getBarcodeAuditSnapshot(){
   return {
     ...barcodeAudit,
-    items: Array.isArray(barcodeAudit.items) ? barcodeAudit.items : []
+    items: Array.isArray(barcodeAudit.items) ? barcodeAudit.items : [],
+    autoRepair: getBarcodeAutoRepairSnapshot()
   };
 }
 // Barcode audit feature end
@@ -2460,6 +2496,57 @@ async function buildBarcodeRepairOptions(productTitle){
   return await decorateReleaseOptions(options, "");
 }
 
+function pickSafeBarcodeRepairCandidate(productTitle, options){
+  const validOptions = (options || []).filter(option => normalizeBarcode(option?.barcode));
+  if (!validOptions.length){
+    return {
+      barcode: "",
+      reason: "No Discogs match with a usable barcode"
+    };
+  }
+
+  const uniqueBarcodes = [...new Set(
+    validOptions
+      .map(option => normalizeBarcode(option.barcode))
+      .filter(Boolean)
+  )];
+
+  const normalizedProductTitle = normalizeComparableTitle(stripShopifyTitleSuffix(productTitle));
+  const exactTitleMatches = validOptions.filter(option =>
+    normalizeComparableTitle(stripShopifyTitleSuffix(option.title)) === normalizedProductTitle
+  );
+  const exactTitleBarcodes = [...new Set(
+    exactTitleMatches
+      .map(option => normalizeBarcode(option.barcode))
+      .filter(Boolean)
+  )];
+
+  if (exactTitleBarcodes.length === 1){
+    return {
+      barcode: exactTitleBarcodes[0],
+      source: exactTitleMatches[0],
+      reason: exactTitleMatches.length > 1
+        ? "Exact title matches shared the same barcode"
+        : ""
+    };
+  }
+
+  if (uniqueBarcodes.length === 1){
+    return {
+      barcode: uniqueBarcodes[0],
+      source: validOptions[0],
+      reason: validOptions.length > 1
+        ? "Multiple Discogs matches shared the same barcode"
+        : ""
+    };
+  }
+
+  return {
+    barcode: "",
+    reason: "Multiple candidate barcodes found. Review manually."
+  };
+}
+
 async function updateShopifyVariantBarcode(variantId, barcode){
   const cleanBarcode = normalizeBarcode(barcode);
   if (!cleanBarcode){
@@ -2483,6 +2570,131 @@ async function updateShopifyVariantBarcode(variantId, barcode){
 
   upsertVariantInCache(res.data.variant);
   return res.data.variant;
+}
+
+function pushBarcodeAutoRepairResult(result){
+  barcodeAutoRepair = {
+    ...barcodeAutoRepair,
+    recentResults: [
+      result,
+      ...(barcodeAutoRepair.recentResults || [])
+    ].slice(0, MAINTENANCE_FAILURE_LIMIT)
+  };
+}
+
+async function runBarcodeAutoRepair(){
+  if (barcodeAutoRepair.running){
+    return getBarcodeAutoRepairSnapshot();
+  }
+
+  const audit = await runBarcodeAudit();
+  const items = Array.isArray(audit.items) ? [...audit.items] : [];
+  const startedAt = new Date().toISOString();
+
+  barcodeAutoRepair = {
+    ...createEmptyBarcodeAutoRepair(),
+    running: true,
+    startedAt,
+    lastRunAt: startedAt,
+    total: items.length
+  };
+
+  try {
+    for (const item of items){
+      barcodeAutoRepair = {
+        ...barcodeAutoRepair,
+        currentProductId: Number(item.productId || 0) || null,
+        currentTitle: item.title || null
+      };
+
+      try {
+        if (Number(item.variantCount || 0) !== 1 || !item.variantIds?.[0]){
+          pushBarcodeAutoRepairResult({
+            productId: item.productId,
+            title: item.title,
+            outcome: "skipped",
+            reason: "Product has multiple variants. Repair manually in Shopify.",
+            finishedAt: new Date().toISOString()
+          });
+          barcodeAutoRepair = {
+            ...barcodeAutoRepair,
+            skipped: barcodeAutoRepair.skipped + 1
+          };
+        } else {
+          const options = await buildBarcodeRepairOptions(item.title);
+          const candidate = pickSafeBarcodeRepairCandidate(item.title, options);
+
+          if (!candidate.barcode){
+            pushBarcodeAutoRepairResult({
+              productId: item.productId,
+              title: item.title,
+              outcome: "skipped",
+              reason: candidate.reason,
+              finishedAt: new Date().toISOString()
+            });
+            barcodeAutoRepair = {
+              ...barcodeAutoRepair,
+              skipped: barcodeAutoRepair.skipped + 1
+            };
+          } else {
+            await updateShopifyVariantBarcode(item.variantIds[0], candidate.barcode);
+            pushBarcodeAutoRepairResult({
+              productId: item.productId,
+              title: item.title,
+              outcome: "repaired",
+              reason: candidate.reason || "Barcode applied",
+              barcode: candidate.barcode,
+              finishedAt: new Date().toISOString()
+            });
+            barcodeAutoRepair = {
+              ...barcodeAutoRepair,
+              repaired: barcodeAutoRepair.repaired + 1
+            };
+            console.log("✅ BARCODE AUTO-REPAIR:", item.productId, candidate.barcode, item.title);
+          }
+        }
+      } catch (err){
+        pushBarcodeAutoRepairResult({
+          productId: item.productId,
+          title: item.title,
+          outcome: "failed",
+          reason: err.message || "Barcode repair failed",
+          finishedAt: new Date().toISOString()
+        });
+        barcodeAutoRepair = {
+          ...barcodeAutoRepair,
+          failed: barcodeAutoRepair.failed + 1,
+          error: err.message
+        };
+        console.log("❌ BARCODE AUTO-REPAIR ERROR:", item.productId, err.message);
+      }
+
+      barcodeAutoRepair = {
+        ...barcodeAutoRepair,
+        processed: barcodeAutoRepair.processed + 1
+      };
+
+      await sleep(SHOPIFY_REQUEST_DELAY_MS);
+    }
+
+    await runBarcodeAudit();
+  } catch (err){
+    barcodeAutoRepair = {
+      ...barcodeAutoRepair,
+      error: err.message
+    };
+    console.log("❌ BARCODE AUTO-REPAIR FAILED:", err.message);
+  } finally {
+    barcodeAutoRepair = {
+      ...barcodeAutoRepair,
+      running: false,
+      currentTitle: null,
+      currentProductId: null,
+      finishedAt: new Date().toISOString()
+    };
+  }
+
+  return getBarcodeAutoRepairSnapshot();
 }
 // Barcode repair feature end
 
@@ -3916,6 +4128,17 @@ app.post("/barcode-audit/run", async (req,res)=>{
   res.json({
     success: true,
     audit
+  });
+});
+
+app.post("/barcode-audit/auto-repair", (req,res)=>{
+  if (!barcodeAutoRepair.running){
+    void runBarcodeAutoRepair();
+  }
+
+  res.json({
+    success: true,
+    audit: getBarcodeAuditSnapshot()
   });
 });
 

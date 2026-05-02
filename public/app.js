@@ -47,6 +47,7 @@ window.onload = function(){
   setInterval(loadImportStatus, 1500);
   setInterval(loadMissingMatches, 5000);
   setInterval(loadMaintenanceStatus, 5000);
+  setInterval(loadBarcodeAudit, 5000);
 };
 
 function applySidebarView(view){
@@ -889,6 +890,7 @@ function renderBarcodeAudit(audit = {}){
   const missingBarcode = Number(audit.missingBarcode || 0);
   const withBarcode = Number(audit.withBarcode || 0);
   const items = Array.isArray(audit.items) ? audit.items : [];
+  const autoRepair = audit.autoRepair || {};
 
   if (!audit.running && !audit.lastRunAt && !totalProducts && !items.length && !audit.error){
     renderEmptyState(
@@ -929,6 +931,101 @@ function renderBarcodeAudit(audit = {}){
     </div>
   `;
   box.appendChild(summary);
+
+  const repairCard = document.createElement("div");
+  repairCard.className = "status-card";
+  repairCard.style.marginTop = "14px";
+
+  const repairProcessed = Number(autoRepair.processed || 0);
+  const repairTotal = Number(autoRepair.total || 0);
+  const repairRunning = Boolean(autoRepair.running);
+  const repairPercent = Number(autoRepair.percent || 0);
+  repairCard.innerHTML = `
+    <div class="status-badges">
+      <span class="status-pill ${repairRunning ? "warn" : "good"}">${repairRunning ? "Running" : "Ready"}</span>
+      <span class="status-pill">${Number(autoRepair.repaired || 0)} repaired</span>
+      <span class="status-pill">${Number(autoRepair.skipped || 0)} skipped</span>
+    </div>
+    <div class="status-stack" style="margin-top:14px;">
+      <div>
+        <div class="status-label">Auto Repair All Safe Matches</div>
+        <p class="section-copy" style="margin-top:6px;">Repairs every single-variant item when Discogs returns one clear barcode or every likely match shares the same barcode. Ambiguous items are left for review instead of guessed.</p>
+      </div>
+      <div class="progress-shell">
+        <div class="progress-bar" style="width:${Math.max(0, Math.min(100, repairPercent))}%;"></div>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Progress</span>
+        <span class="status-value">${repairProcessed} of ${repairTotal || missingBarcode}</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Failed</span>
+        <span class="status-value">${Number(autoRepair.failed || 0)}</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Current Item</span>
+        <span class="status-value">${autoRepair.currentTitle || "Waiting to start"}</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Last Run</span>
+        <span class="status-value">${formatTimestamp(autoRepair.lastRunAt)}</span>
+      </div>
+      ${autoRepair.error ? `<p class="muted-note">Last error: ${autoRepair.error}</p>` : ""}
+    </div>
+  `;
+
+  const repairActions = document.createElement("div");
+  repairActions.className = "result-actions-inline";
+  repairActions.style.marginTop = "14px";
+
+  const repairBtn = document.createElement("button");
+  repairBtn.className = "primary-btn";
+  repairBtn.textContent = repairRunning ? "Repair Running..." : "Auto Repair All Safe Matches";
+  repairBtn.disabled = repairRunning || !missingBarcode;
+  repairBtn.onclick = async () => {
+    await runBarcodeAutoRepairStart();
+  };
+
+  repairActions.appendChild(repairBtn);
+  repairCard.appendChild(repairActions);
+
+  const recentResults = Array.isArray(autoRepair.recentResults) ? autoRepair.recentResults.slice(0, 8) : [];
+  if (recentResults.length){
+    const resultList = document.createElement("div");
+    resultList.className = "status-stack";
+    resultList.style.marginTop = "14px";
+
+    const resultLabel = document.createElement("div");
+    resultLabel.className = "status-label";
+    resultLabel.textContent = "Recent Auto Repair Results";
+    resultList.appendChild(resultLabel);
+
+    recentResults.forEach(result => {
+      const row = document.createElement("div");
+      row.className = "history-item";
+
+      const title = document.createElement("h3");
+      title.className = "history-title";
+      title.textContent = result.title || `Product ${result.productId || "Unknown"}`;
+
+      const meta = document.createElement("p");
+      meta.className = "history-meta";
+      meta.textContent = [
+        result.outcome ? result.outcome.charAt(0).toUpperCase() + result.outcome.slice(1) : null,
+        result.barcode ? `UPC ${result.barcode}` : null,
+        result.reason || null,
+        formatTimestamp(result.finishedAt)
+      ].filter(Boolean).join(" • ");
+
+      row.appendChild(title);
+      row.appendChild(meta);
+      resultList.appendChild(row);
+    });
+
+    repairCard.appendChild(resultList);
+  }
+
+  box.appendChild(repairCard);
 
   if (!items.length && !audit.running){
     const clean = document.createElement("div");
@@ -1162,6 +1259,20 @@ async function runBarcodeAudit(){
     alert("Could not run barcode audit");
     await loadBarcodeAudit();
   }
+}
+
+async function runBarcodeAutoRepairStart(){
+  const res = await fetch("/barcode-audit/auto-repair", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" }
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.success === false){
+    alert(data.error || "Could not start barcode auto repair");
+    await loadBarcodeAudit();
+    return;
+  }
+  renderBarcodeAudit(data.audit || {});
 }
 
 async function suggestBarcodeRepair(productId){
