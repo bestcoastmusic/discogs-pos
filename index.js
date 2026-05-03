@@ -2514,7 +2514,7 @@ async function fetchShopifyVariantDetails(variantId){
 }
 
 async function fetchShopifyInventoryItem(inventoryItemId){
-  const res = await shopifyRequest(`/inventory_items/${inventoryItemId}.json?fields=id,cost`);
+  const res = await shopifyRequest(`/inventory_items/${inventoryItemId}.json?fields=id,cost,tracked,sku`);
   if (!res.ok || !res.data?.inventory_item){
     throw new Error(`Shopify inventory item fetch failed (${res.status})`);
   }
@@ -3899,6 +3899,31 @@ async function updateInventoryItemCost(inventoryItemId, cost){
   return res.data.inventory_item;
 }
 
+async function ensureInventoryItemTracked(inventoryItemId, sku = ""){
+  const inventoryItem = await fetchShopifyInventoryItem(inventoryItemId);
+  if (inventoryItem?.tracked){
+    return inventoryItem;
+  }
+
+  const res = await shopifyRequest(`/inventory_items/${inventoryItemId}.json`, {
+    method: "PUT",
+    body: JSON.stringify({
+      inventory_item: {
+        id: inventoryItemId,
+        tracked: true,
+        ...(sku ? { sku } : {})
+      }
+    })
+  });
+
+  if (!res.ok || !res.data?.inventory_item){
+    console.log("❌ INVENTORY TRACKING ERROR:", res.data);
+    throw new Error(`Shopify inventory tracking update failed (${res.status})`);
+  }
+
+  return res.data.inventory_item;
+}
+
 async function createShopifyProduct(item){
   const tags = buildShopifyTags(item);
   const res = await shopifyRequest("/products.json", {
@@ -3967,6 +3992,10 @@ async function updateShopifyProduct(variant, item){
   if (!variantRes.ok || !variantRes.data?.variant){
     console.log("❌ VARIANT UPDATE ERROR:", variantRes.data);
     throw new Error(`Shopify variant update failed (${variantRes.status})`);
+  }
+
+  if (variant.inventory_item_id){
+    await ensureInventoryItemTracked(variant.inventory_item_id, item.barcode || "");
   }
 
   return {
