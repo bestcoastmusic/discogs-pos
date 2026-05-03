@@ -104,7 +104,9 @@ const SHOPIFY_REQUEST_DELAY_MS = 550;
 const SHOPIFY_MAX_ATTEMPTS = 4;
 const DISCOGS_REQUEST_DELAY_MS = 250;
 const DISCOGS_FETCH_GAP_MS = 1200;
+const DISCOGS_SEARCH_RESULT_LIMIT = 15;
 const DISCOGS_BULK_OPTION_LIMIT = 3;
+const DISCOGS_SINGLE_OPTION_LIMIT = 8;
 const COUNTRY_PREFERENCE = [
   "US",
   "USA",
@@ -1330,9 +1332,35 @@ function normalizeComparableTitle(value){
     .trim();
 }
 
+function normalizeCountryText(value){
+  return String(value || "").trim().toLowerCase();
+}
+
+function matchesCountryPreference(country, preference){
+  const normalized = normalizeCountryText(country);
+  const preferred = normalizeCountryText(preference);
+
+  if (!normalized || !preferred){
+    return false;
+  }
+
+  if (normalized === preferred){
+    return true;
+  }
+
+  if (preferred === "us" || preferred === "usa"){
+    return /\bus\b/.test(normalized) || /\busa\b/.test(normalized) || normalized.includes("united states");
+  }
+
+  if (preferred === "uk"){
+    return /\buk\b/.test(normalized) || normalized.includes("united kingdom");
+  }
+
+  return normalized.includes(preferred);
+}
+
 function getCountryPreferenceScore(country){
-  const normalized = String(country || "").trim().toLowerCase();
-  const index = COUNTRY_PREFERENCE.findIndex(entry => entry.toLowerCase() === normalized);
+  const index = COUNTRY_PREFERENCE.findIndex(entry => matchesCountryPreference(country, entry));
   return index === -1 ? COUNTRY_PREFERENCE.length : index;
 }
 
@@ -1343,6 +1371,47 @@ function sortResultsByCountryPreference(results){
 
     if (scoreA !== scoreB){
       return scoreA - scoreB;
+    }
+
+    const yearA = Number(a.year || 0);
+    const yearB = Number(b.year || 0);
+    if (yearA !== yearB){
+      return yearB - yearA;
+    }
+
+    return String(a.title || "").localeCompare(String(b.title || ""));
+  });
+}
+
+function sortReleaseOptionsByPreference(options, requestedBarcode = ""){
+  const requestedCandidates = getBarcodeCandidates(requestedBarcode);
+
+  return [...options].sort((a, b) => {
+    if (requestedCandidates.length){
+      const exactA = getBarcodeCandidates(a.barcode).some(candidate => requestedCandidates.includes(candidate));
+      const exactB = getBarcodeCandidates(b.barcode).some(candidate => requestedCandidates.includes(candidate));
+
+      if (exactA !== exactB){
+        return exactA ? -1 : 1;
+      }
+
+      const mismatchA = Boolean(a.reviewFlags?.barcodeMismatch);
+      const mismatchB = Boolean(b.reviewFlags?.barcodeMismatch);
+      if (mismatchA !== mismatchB){
+        return mismatchA ? 1 : -1;
+      }
+    }
+
+    const missingBarcodeA = Boolean(a.reviewFlags?.missingBarcode);
+    const missingBarcodeB = Boolean(b.reviewFlags?.missingBarcode);
+    if (missingBarcodeA !== missingBarcodeB){
+      return missingBarcodeA ? 1 : -1;
+    }
+
+    const countryScoreA = getCountryPreferenceScore(a.country);
+    const countryScoreB = getCountryPreferenceScore(b.country);
+    if (countryScoreA !== countryScoreB){
+      return countryScoreA - countryScoreB;
     }
 
     const yearA = Number(a.year || 0);
@@ -1698,7 +1767,7 @@ async function searchDiscogsByBarcode(barcode){
     );
   }
 
-  return (data.results || []).slice(0, 5);
+  return (data.results || []).slice(0, DISCOGS_SEARCH_RESULT_LIMIT);
 }
 
 // Barcode repair feature start
@@ -2373,7 +2442,7 @@ async function decorateReleaseOptions(options, requestedBarcode = ""){
     option.importProductId = importState.importProductId;
   }
 
-  return sortResultsByCountryPreference(options);
+  return sortReleaseOptionsByPreference(options, requestedBarcode);
 }
 
 async function buildReleaseOptionsForReleaseId(releaseId){
@@ -2395,7 +2464,7 @@ async function buildReleaseOptions(barcode, mode = "single"){
   const prioritizedResults = sortResultsByCountryPreference(rawResults);
   const results = mode === "bulk"
     ? prioritizedResults.slice(0, DISCOGS_BULK_OPTION_LIMIT)
-    : prioritizedResults;
+    : prioritizedResults.slice(0, DISCOGS_SINGLE_OPTION_LIMIT);
   const options = [];
 
   for (const result of results){
